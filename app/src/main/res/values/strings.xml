@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">NovaStream</string>
+    <string name="cd_back">Navigate back</string>
+    <string name="cd_search">Search channels and media</string>
+    <string name="cd_refresh_epg">Refresh playlists and EPG</string>
+    <string name="cd_settings">Settings and parental lock</string>
+    <string name="cd_switch_profile">Switch playlist profile</string>
+    <string name="cd_play_pause">Play or pause</string>
+    <string name="cd_pip">Enter Picture-in-Picture</string>
+    <string name="cd_fullscreen">Toggle fullscreen</string>
+    <string name="cd_aspect_ratio">Cycle video aspect ratio</string>
+    <string name="cd_audio_subtitles">Audio and subtitle tracks</string>
+    <string name="cd_channel_zapper">Open channel zapper</string>
+    <string name="cd_lock_toggle">Toggle parental lock</string>
+    <string name="cd_favorite">Toggle favorite</string>
+    <string name="cd_sleep_timer">Set sleep timer</string>
+    <string name="cd_signal_hud">Toggle signal diagnostics HUD</string>
+    <string name="cd_external_player">Open in external player</string>
+    <string name="cd_audio_only">Toggle audio-only mode</string>
+</resources>

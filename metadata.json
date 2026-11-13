@@ -1,0 +1,6 @@
+{
+  "name": "NovaStream Player",
+  "description": "Cinematic IPTV and OTT streaming player supporting Xtream Codes API, M3U/M3U8 playlists, XMLTV EPG, Catch-Up replay, Multi-Screen split view, Picture-in-Picture, and local parental PIN locks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
