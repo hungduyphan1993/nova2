@@ -83,6 +83,8 @@ class NovaPlayerManager(private val context: Context) {
         overrideUrl: String? = null,
         profileUserAgent: String,
         bufferPreset: BufferPreset,
+        preferredAudioLanguage: String = "",
+        preferredSubtitleLanguage: String = "",
         startPositionMs: Long = 0L,
         onError: (String) -> Unit = {},
         onTelemetryChanged: (StreamTelemetry) -> Unit = {},
@@ -98,7 +100,9 @@ class NovaPlayerManager(private val context: Context) {
             httpHeaders = headers,
             drmScheme = stream.drmScheme,
             drmLicenseKey = stream.drmLicenseKey,
-            capResolutionForMultiScreen = false
+            capResolutionForMultiScreen = false,
+            preferredAudioLanguage = preferredAudioLanguage,
+            preferredSubtitleLanguage = preferredSubtitleLanguage
         )
         primaryPlayer = player
 
@@ -278,7 +282,9 @@ class NovaPlayerManager(private val context: Context) {
         httpHeaders: Map<String, String>,
         drmScheme: String,
         drmLicenseKey: String,
-        capResolutionForMultiScreen: Boolean
+        capResolutionForMultiScreen: Boolean,
+        preferredAudioLanguage: String = "",
+        preferredSubtitleLanguage: String = ""
     ): ExoPlayer {
         val userAgent = httpHeaders["User-Agent"] ?: "NovaStream/1.0 (Android)"
         val dataSourceFactory = DefaultHttpDataSource.Factory()
@@ -296,6 +302,15 @@ class NovaPlayerManager(private val context: Context) {
             val builder = buildUponParameters()
                 .setAllowVideoMixedMimeTypeAdaptiveness(true)
                 .setAllowAudioMixedMimeTypeAdaptiveness(true)
+            if (preferredAudioLanguage.isNotBlank()) {
+                builder.setPreferredAudioLanguage(preferredAudioLanguage)
+            }
+            if (preferredSubtitleLanguage.equals("off", ignoreCase = true)) {
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            } else if (preferredSubtitleLanguage.isNotBlank()) {
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                builder.setPreferredTextLanguage(preferredSubtitleLanguage)
+            }
             if (capResolutionForMultiScreen) {
                 builder.setMaxVideoSize(1280, 720)
             }

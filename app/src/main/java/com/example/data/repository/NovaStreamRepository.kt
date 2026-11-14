@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import android.net.Uri
+import com.example.data.local.AdultCategoryClassifier
 import com.example.data.local.AppDatabase
 import com.example.data.local.CategoryEntity
 import com.example.data.local.EpgProgramEntity
@@ -105,12 +106,20 @@ class NovaStreamRepository(
 
     fun observeWatchProgress(profileId: Long): Flow<List<WatchProgressEntity>> = progressDao.observeRecent(profileId)
 
+    fun observeFavoriteCount(profileId: Long): Flow<Int> = streamDao.observeFavoriteCount(profileId)
+
+    fun observeHistoryCount(profileId: Long): Flow<Int> = progressDao.observeHistoryCount(profileId)
+
+    fun observeEpgCount(profileId: Long): Flow<Int> = epgDao.observeProgramCount(profileId)
+
     suspend fun searchStreams(profileId: Long, query: String): List<StreamItemEntity> =
         withContext(Dispatchers.IO) { streamDao.searchByTitle(profileId, query) }
 
+    private val syncedCatchUpChannelKeys = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     suspend fun searchPrograms(profileId: Long, query: String): List<EpgProgramEntity> =
         withContext(Dispatchers.IO) {
-            epgDao.searchPrograms(profileId, query, System.currentTimeMillis() - 6 * 3600_000L)
+            epgDao.searchPrograms(profileId, query, System.currentTimeMillis() - 7L * 24L * 3600_000L)
         }
 
     suspend fun toggleFavorite(streamId: Long, favorite: Boolean) =
@@ -134,6 +143,25 @@ class NovaStreamRepository(
     suspend fun setCategoryLocked(categoryId: Long, locked: Boolean) =
         withContext(Dispatchers.IO) { categoryDao.setLocked(categoryId, locked) }
 
+    suspend fun setCategoriesLocked(ids: List<Long>, locked: Boolean) = withContext(Dispatchers.IO) {
+        ids.chunked(500).forEach { chunk -> categoryDao.setLockedForIds(chunk, locked) }
+    }
+
+    suspend fun setCategoriesHidden(ids: List<Long>, hidden: Boolean) = withContext(Dispatchers.IO) {
+        ids.chunked(500).forEach { chunk -> categoryDao.setHiddenForIds(chunk, hidden) }
+    }
+
+    suspend fun applyAdultAutoLockForProfile(profileId: Long): Int = withContext(Dispatchers.IO) {
+        val cats = categoryDao.getAllForProfile(profileId)
+        val unlockedAdultIds = cats
+            .filter { AdultCategoryClassifier.isAdultCategoryName(it.name) && !it.isLocked }
+            .map { it.id }
+        if (unlockedAdultIds.isNotEmpty()) {
+            setCategoriesLocked(unlockedAdultIds, true)
+        }
+        unlockedAdultIds.size
+    }
+
     suspend fun toggleEpgReminder(programId: Long, enabled: Boolean) =
         withContext(Dispatchers.IO) { epgDao.setReminder(programId, enabled) }
 
@@ -143,6 +171,29 @@ class NovaStreamRepository(
     suspend fun updateEpgOffset(profileId: Long, offsetMinutes: Int) = withContext(Dispatchers.IO) {
         val current = profileDao.getById(profileId) ?: return@withContext
         profileDao.update(current.copy(epgOffsetMinutes = offsetMinutes))
+    }
+
+    suspend fun updateProfileUserAgent(profileId: Long, userAgent: String) = withContext(Dispatchers.IO) {
+        val current = profileDao.getById(profileId) ?: return@withContext
+        val sanitized = userAgent.trim().ifBlank { "NovaStream/1.0 (Android)" }
+        profileDao.update(current.copy(userAgent = sanitized))
+    }
+
+    suspend fun clearWatchHistory(profileId: Long) = withContext(Dispatchers.IO) {
+        progressDao.deleteByProfile(profileId)
+    }
+
+    suspend fun clearFavorites(profileId: Long) = withContext(Dispatchers.IO) {
+        streamDao.clearFavoritesForProfile(profileId)
+    }
+
+    suspend fun clearEpgCache(profileId: Long) = withContext(Dispatchers.IO) {
+        epgDao.deleteByProfile(profileId)
+        syncedCatchUpChannelKeys.clear()
+    }
+
+    suspend fun clearEngineOverrides(profileId: Long) = withContext(Dispatchers.IO) {
+        streamDao.clearEngineOverridesForProfile(profileId)
     }
 
     suspend fun deleteProfile(profileId: Long) = withContext(Dispatchers.IO) {
@@ -209,9 +260,19 @@ class NovaStreamRepository(
         val vodCats = xtreamApi.fetchCategories(profileId, profile.serverUrl, profile.username, profile.password, profile.userAgent, MediaCategoryType.MOVIE)
         val seriesCats = xtreamApi.fetchCategories(profileId, profile.serverUrl, profile.username, profile.password, profile.userAgent, MediaCategoryType.SERIES)
 
+        val autoLockAdult = prefs.preferencesFlow.firstOrNull()?.autoLockAdultCategories ?: true
         val mergedCats = (liveCats + vodCats + seriesCats).map { cat ->
             val old = existingCats[cat.categoryKey]
-            if (old != null) cat.copy(isPinned = old.isPinned, isHidden = old.isHidden, isLocked = old.isLocked) else cat
+            val shouldAutoLock = autoLockAdult && AdultCategoryClassifier.isAdultCategoryName(cat.name)
+            if (old != null) {
+                cat.copy(
+                    isPinned = old.isPinned,
+                    isHidden = old.isHidden,
+                    isLocked = old.isLocked || shouldAutoLock
+                )
+            } else {
+                cat.copy(isLocked = shouldAutoLock)
+            }
         }
 
         onProgress(SyncStage.InProgress("Importing Live Channels", "Downloading live stream index"))
@@ -342,14 +403,20 @@ class NovaStreamRepository(
             }
         }
 
+        val autoLockAdult = prefs.preferencesFlow.firstOrNull()?.autoLockAdultCategories ?: true
         val collectedCategories = linkedMapOf<String, CategoryEntity>()
         val detectedEpg = M3uParser.parseStream(profileId, inputStream) { cats, streams, episodes ->
             cats.forEach { cat ->
                 val old = existingCats[cat.categoryKey]
+                val shouldAutoLock = autoLockAdult && AdultCategoryClassifier.isAdultCategoryName(cat.name)
                 collectedCategories[cat.categoryKey] = if (old != null) {
-                    cat.copy(isPinned = old.isPinned, isHidden = old.isHidden, isLocked = old.isLocked)
+                    cat.copy(
+                        isPinned = old.isPinned,
+                        isHidden = old.isHidden,
+                        isLocked = old.isLocked || shouldAutoLock
+                    )
                 } else {
-                    cat
+                    cat.copy(isLocked = shouldAutoLock)
                 }
             }
             if (streams.isNotEmpty()) {
@@ -452,6 +519,52 @@ class NovaStreamRepository(
             streamDao.getById(stream.id) ?: stream
         }
 
+    suspend fun ensureChannelCatchUpLoaded(
+        profileId: Long,
+        stream: StreamItemEntity,
+        forceRefresh: Boolean = false
+    ): Boolean = withContext(Dispatchers.IO) {
+        val profile = profileDao.getById(profileId) ?: return@withContext false
+        val sessionKey = "${profileId}_${stream.id}"
+        if (!forceRefresh && sessionKey in syncedCatchUpChannelKeys) return@withContext false
+
+        if (profile.sourceType == PlaylistSourceType.DEMO) {
+            syncedCatchUpChannelKeys.add(sessionKey)
+            val now = System.currentTimeMillis()
+            val existingOld = epgDao.searchPrograms(profileId, "", 0L)
+                .any { it.startEpochMs < now - 6L * 3600_000L }
+            if (!existingOld || forceRefresh) {
+                seedDemoContentForProfile(profileId)
+                return@withContext true
+            }
+            return@withContext false
+        }
+
+        if (profile.sourceType != PlaylistSourceType.XTREAM) return@withContext false
+
+        val channelKey = stream.effectiveEpgKey
+        val listings = xtreamApi.fetchCatchUpEpgTable(
+            profileId = profileId,
+            serverUrl = profile.serverUrl,
+            username = profile.username,
+            password = profile.password,
+            userAgent = profile.userAgent,
+            streamRemoteId = stream.remoteStreamId,
+            targetChannelKey = channelKey,
+            offsetMinutes = profile.epgOffsetMinutes
+        )
+        syncedCatchUpChannelKeys.add(sessionKey)
+        if (listings.isNotEmpty()) {
+            val minStart = listings.minOf { it.startEpochMs }
+            val maxEnd = listings.maxOf { it.endEpochMs }
+            epgDao.deleteChannelRangeWithoutReminders(profileId, channelKey, minStart, maxEnd)
+            epgDao.insertAll(listings)
+            true
+        } else {
+            false
+        }
+    }
+
     suspend fun ensureSeriesEpisodesLoaded(profileId: Long, seriesItem: StreamItemEntity) =
         withContext(Dispatchers.IO) {
             val profile = profileDao.getById(profileId) ?: return@withContext
@@ -529,7 +642,16 @@ class NovaStreamRepository(
             prefs.setAutoPip(bundle.preferences.autoPipOnBackground)
             prefs.setDefaultEngine(bundle.preferences.defaultEngine)
             prefs.setVlcHardwareMode(bundle.preferences.vlcHardwareMode)
+            prefs.setMpvHardwareMode(bundle.preferences.mpvHardwareMode)
             prefs.setAutoFallbackEngine(bundle.preferences.autoFallbackEngine)
+            prefs.setAutoReconnect(bundle.preferences.autoReconnectLive)
+            prefs.setSubtitleSize(bundle.preferences.subtitleSize)
+            prefs.setPreferredAudioLanguage(bundle.preferences.preferredAudioLanguage)
+            prefs.setPreferredSubtitleLanguage(bundle.preferences.preferredSubtitleLanguage)
+            prefs.setOsdTimeoutSec(bundle.preferences.osdTimeoutSec)
+            prefs.setUse24HourClock(bundle.preferences.use24HourClock)
+            prefs.setStartupBehavior(bundle.preferences.startupBehavior)
+            prefs.setAutoLockAdultCategories(bundle.preferences.autoLockAdultCategories)
             "Restored ${bundle.profiles.size} profile(s)"
         }
     }
@@ -760,26 +882,68 @@ class NovaStreamRepository(
         )
         episodeDao.insertAll(episodes)
 
-        // Generate 30-min EPG blocks from -2h to +6h around now
-        val hourFloor = (now / 1_800_000L) * 1_800_000L
+        // Generate realistic 60-min EPG archive blocks spanning -72h (3 full days of Catch-Up) to +12h ahead
+        val hourFloor = (now / 3_600_000L) * 3_600_000L
         val epgSlots = mutableListOf<EpgProgramEntity>()
         val channelMeta = listOf(
-            "nova.world" to listOf("Global Briefing", "Tech & Markets Live", "Evening World Desk", "Documentary Hour", "Nightline Analysis"),
-            "arena.sports" to listOf("Matchday Pre-Show", "Championship Live", "Post-Match Tactics", "Highlights Blitz", "Late Night Replay"),
-            "scifi.orbit" to listOf("Deep Space Horizons", "Quantum Frontiers", "Exoplanet Atlas", "Mission Telemetry", "Orbital Cinema"),
-            "cinema.reel" to listOf("Indie Spotlight", "Director's Commentary", "Golden Frame", "Midnight Feature", "Animation Vault")
+            Triple(
+                "nova.world",
+                3,
+                listOf(
+                    "Global Morning Briefing" to "Overnight diplomatic dispatches, global weather radar, and international headlines.",
+                    "Tech & Silicon Markets Live" to "Opening bell coverage, semiconductor supply analysis, and AI infrastructure reports.",
+                    "Midday World Desk" to "Live correspondents reporting from London, Tokyo, Singapore, and New York.",
+                    "Planet Earth Documentary Hour" to "Long-form investigative feature exploring ocean conservation and climate resilience.",
+                    "Prime Time Geopolitics" to "In-depth roundtable debate with foreign policy analysts and economic historians.",
+                    "Nightline Global Wrap" to "Late-evening summary of global markets, science breakthroughs, and cultural stories."
+                )
+            ),
+            Triple(
+                "arena.sports",
+                3,
+                listOf(
+                    "Morning Warmup & Transfers" to "Daily training ground updates, injury reports, and club transfer rumors.",
+                    "Tactical Breakdown Studio" to "Frame-by-frame telestrator analysis of recent championship fixtures.",
+                    "Motorsport Paddock Live" to "Trackside telemetry, qualifying sector comparisons, and pit strategy.",
+                    "Championship Matchday Live" to "Full high-bitrate multi-audio stadium broadcast with live commentary.",
+                    "Post-Match Press & Highlights" to "Manager interviews, locker-room reactions, and extended match highlights.",
+                    "Classic Finals Vault" to "Remastered full-match replay from historic tournament finals."
+                )
+            ),
+            Triple(
+                "scifi.orbit",
+                2,
+                listOf(
+                    "Deep Space Horizons" to "James Webb infrared discoveries and deep-field galaxy spectroscopy.",
+                    "Quantum Frontiers" to "Accessible breakdown of quantum error correction, fusion, and particle physics.",
+                    "Exoplanet Atlas" to "Touring habitable-zone rocky worlds and atmospheric biosignature missions.",
+                    "Orbital Station Telemetry" to "Live low-Earth orbit mission logs, EVA prep, and propulsion engineering.",
+                    "Sci-Fi Short Film Showcase" to "Open-source VFX cinema featuring Tears of Steel and futuristic shorts."
+                )
+            ),
+            Triple(
+                "cinema.reel",
+                1,
+                listOf(
+                    "Animation Vault Classics" to "Curated open-movie animation shorts mastered in crisp progressive HD.",
+                    "Director's Storyboard Lab" to "Behind-the-scenes look at lighting, rigging, and sound design workflows.",
+                    "Indie Festival Spotlight" to "Award-winning independent short films from international cinema festivals.",
+                    "Midnight Fantasy Feature" to "Late-night screening of Sintel with full surround audio mix."
+                )
+            )
         )
-        channelMeta.forEach { (chId, titles) ->
-            for (slotIdx in -4..10) {
-                val start = hourFloor + slotIdx * 1_800_000L
-                val end = start + 1_800_000L
-                val title = titles[(slotIdx + 10) % titles.size]
+        channelMeta.forEach { (chId, archiveDays, shows) ->
+            val startSlot = -(archiveDays * 24)
+            for (slotIdx in startSlot..12) {
+                val start = hourFloor + slotIdx * 3_600_000L
+                val end = start + 3_600_000L
+                val (title, synopsis) = shows[((slotIdx % shows.size) + shows.size) % shows.size]
                 epgSlots.add(
                     EpgProgramEntity(
                         profileId = profileId,
                         epgChannelId = chId,
                         title = title,
-                        description = "Live high-definition broadcast on $chId. Catch-Up replay available for aired blocks.",
+                        description = synopsis,
                         startEpochMs = start,
                         endEpochMs = end
                     )

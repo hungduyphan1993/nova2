@@ -146,4 +146,116 @@ class NovaParsersTest {
         assertTrue(com.example.data.local.PlaybackEngine.externalEngines.contains(com.example.data.local.PlaybackEngine.EXTERNAL_VLC))
         assertTrue(com.example.data.local.PlaybackEngine.selectableGlobalEngines.none { it == com.example.data.local.PlaybackEngine.DEFAULT })
     }
+
+    @Test
+    fun xtreamSimpleDataTableDecodesBase64AndFallbackTimestamps() {
+        // "Evening News" = RXZlbmluZyBOZXdz, "Live recap" = TGl2ZSByZWNhcA==
+        val sampleJson = """
+            {
+              "epg_listings": [
+                {
+                  "id": "10",
+                  "title": "RXZlbmluZyBOZXdz",
+                  "description": "TGl2ZSByZWNhcA==",
+                  "start_timestamp": "1700000000",
+                  "stop_timestamp": "1700003600",
+                  "has_archive": 1
+                },
+                {
+                  "id": "11",
+                  "title": "Plain Text Show",
+                  "description": "Direct description",
+                  "start": "2023-11-14 23:13:20",
+                  "end": "2023-11-15 00:13:20",
+                  "has_archive": 1
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = com.example.data.network.XtreamApiService.parseSimpleDataTableJson(
+            rawJson = sampleJson,
+            profileId = 5L,
+            targetChannelKey = "news.1",
+            offsetMinutes = 0
+        )
+
+        assertEquals(2, parsed.size)
+        assertEquals("Evening News", parsed[0].title)
+        assertEquals("Live recap", parsed[0].description)
+        assertEquals(1_700_000_000_000L, parsed[0].startEpochMs)
+        assertEquals(1_700_003_600_000L, parsed[0].endEpochMs)
+        assertEquals("Plain Text Show", parsed[1].title)
+    }
+
+    @Test
+    fun catchUpHourlyTimeshiftBlocksAndEffectiveEpgKeyWork() {
+        val channelNoXmltvId = com.example.data.local.StreamItemEntity(
+            id = 42L,
+            profileId = 1L,
+            mediaType = com.example.data.local.MediaCategoryType.LIVE,
+            categoryKey = "sports",
+            remoteStreamId = "8899",
+            title = "Archive Sport HD",
+            streamUrl = "http://srv/live/u/p/8899.ts",
+            epgChannelId = "",
+            catchupDays = 5
+        )
+        assertTrue(channelNoXmltvId.supportsCatchUp)
+        assertEquals("stream_8899", channelNoXmltvId.effectiveEpgKey)
+
+        val dayStart = 1_700_006_400_000L // midnight UTC
+        val dayEnd = dayStart + 86_400_000L
+        val nowMs = dayStart + 4L * 3_600_000L + 15L * 60_000L // 04:15
+        val blocks = com.example.ui.screens.buildHourlyTimeshiftBlocks(
+            profileId = 1L,
+            epgKey = channelNoXmltvId.effectiveEpgKey,
+            dayStartMs = dayStart,
+            dayEndMs = dayEnd,
+            nowMs = nowMs
+        )
+        // Slots covering 00:00-01:00, 01:00-02:00, 02:00-03:00, 03:00-04:00, and current 04:00-05:00
+        assertEquals(5, blocks.size)
+        assertEquals(dayStart, blocks.first().startEpochMs)
+        assertEquals(dayStart + 5L * 3_600_000L, blocks.last().endEpochMs)
+    }
+
+    @Test
+    fun adultCategoryClassifierAndFormattingSettingsWork() {
+        val adultNames = listOf(
+            "Adult HD",
+            "VIP | 18+ Channels",
+            "[+18] Late Night",
+            "XXX Movies",
+            "UK - For Adults Only",
+            "NSFW VOD",
+            "Erotic Cinema"
+        )
+        adultNames.forEach { name ->
+            assertTrue("Expected adult match for: $name", com.example.data.local.AdultCategoryClassifier.isAdultCategoryName(name))
+        }
+
+        val regularNames = listOf(
+            "World News & Live",
+            "Sports & Action",
+            "Kids & Family",
+            "Sci-Fi 4K UHD",
+            "Documentary History"
+        )
+        regularNames.forEach { name ->
+            org.junit.Assert.assertFalse("Unexpected adult match for: $name", com.example.data.local.AdultCategoryClassifier.isAdultCategoryName(name))
+        }
+
+        val sampleEpoch = 1_700_050_000_000L
+        com.example.ui.components.NovaFormatters.use24HourClock = true
+        val c24 = com.example.ui.components.NovaFormatters.formatClock(sampleEpoch)
+        com.example.ui.components.NovaFormatters.use24HourClock = false
+        val c12 = com.example.ui.components.NovaFormatters.formatClock(sampleEpoch)
+        com.example.ui.components.NovaFormatters.use24HourClock = true
+        assertTrue(c24.isNotBlank())
+        assertTrue(c12.contains("AM", ignoreCase = true) || c12.contains("PM", ignoreCase = true))
+
+        assertEquals(1.25f, com.example.data.local.SubtitleSizePreset.LARGE.scaleFactor, 0.001f)
+        assertEquals("Off by Default", com.example.data.local.NovaLanguageOptions.displayLabel("off", isSubtitle = true))
+    }
 }

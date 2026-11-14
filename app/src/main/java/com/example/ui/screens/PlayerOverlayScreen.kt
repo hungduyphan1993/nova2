@@ -49,10 +49,12 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Pause
@@ -106,6 +108,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.SubtitleView
 import com.example.data.local.AspectRatioMode
 import com.example.data.local.EpgProgramEntity
 import com.example.data.local.PlaybackEngine
@@ -160,6 +163,9 @@ fun PlayerOverlayScreen(
     onResetTrackAuto: (Int, Boolean) -> Unit,
     onSwitchEngine: (PlaybackEngine, Boolean) -> Unit,
     onSetSleepTimer: (Int?) -> Unit,
+    onLoadChannelArchive: (StreamItemEntity) -> Unit,
+    onPlayCatchUp: (StreamItemEntity, EpgProgramEntity) -> Unit,
+    onReturnToLive: (StreamItemEntity) -> Unit,
     onRetryStream: () -> Unit,
     onEnterPip: () -> Unit
 ) {
@@ -168,6 +174,7 @@ fun PlayerOverlayScreen(
     var showZapperDrawer by remember { mutableStateOf(false) }
     var showTracksSheet by remember { mutableStateOf(false) }
     var showEngineSheet by remember { mutableStateOf(false) }
+    var showCatchUpSheet by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
     var showKeypad by remember { mutableStateOf(false) }
     var keypadBuffer by remember { mutableStateOf("") }
@@ -205,9 +212,10 @@ fun PlayerOverlayScreen(
         }
     }
 
-    LaunchedEffect(showOsd, uiState.isPlaying, showZapperDrawer, showTracksSheet, showEngineSheet) {
-        if (showOsd && uiState.isPlaying && !showZapperDrawer && !showTracksSheet && !showEngineSheet) {
-            delay(4500)
+    LaunchedEffect(showOsd, uiState.isPlaying, uiState.osdTimeoutSec, showZapperDrawer, showTracksSheet, showEngineSheet, showCatchUpSheet) {
+        val timeoutSec = uiState.osdTimeoutSec
+        if (showOsd && timeoutSec > 0 && uiState.isPlaying && !showZapperDrawer && !showTracksSheet && !showEngineSheet && !showCatchUpSheet) {
+            delay(timeoutSec * 1000L)
             showOsd = false
         }
     }
@@ -291,6 +299,9 @@ fun PlayerOverlayScreen(
                             },
                             update = { view ->
                                 view.player = player
+                                view.subtitleView?.setFractionalTextSize(
+                                    SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * uiState.subtitleSize.scaleFactor
+                                )
                                 view.resizeMode = when (uiState.aspectRatioMode) {
                                     AspectRatioMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                                     AspectRatioMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
@@ -647,6 +658,25 @@ fun PlayerOverlayScreen(
                                             onClick = { onPlayNextEpisode() }
                                         )
                                     }
+                                    if (uiState.isCatchUp && activeChannel != null) {
+                                        OsdPillButton(
+                                            icon = Icons.Default.LiveTv,
+                                            label = "Watch Live",
+                                            testTag = "player_return_live_button",
+                                            accentTint = ElectricCyan,
+                                            onClick = { onReturnToLive(activeChannel) }
+                                        )
+                                        OsdPillButton(
+                                            icon = Icons.Default.History,
+                                            label = "Catch-Up Guide",
+                                            testTag = "player_catchup_button",
+                                            accentTint = UltravioletPulse,
+                                            onClick = {
+                                                onLoadChannelArchive(activeChannel)
+                                                showCatchUpSheet = true
+                                            }
+                                        )
+                                    }
                                 }
 
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -739,6 +769,18 @@ fun PlayerOverlayScreen(
                                             onClick = {
                                                 keypadBuffer = ""
                                                 showKeypad = true
+                                            }
+                                        )
+                                    }
+                                    if (activeChannel.supportsCatchUp) {
+                                        OsdPillButton(
+                                            icon = Icons.Default.History,
+                                            label = "Catch-Up",
+                                            testTag = "player_catchup_button",
+                                            accentTint = UltravioletPulse,
+                                            onClick = {
+                                                onLoadChannelArchive(activeChannel)
+                                                showCatchUpSheet = true
                                             }
                                         )
                                     }
@@ -1003,6 +1045,16 @@ fun PlayerOverlayScreen(
                         onSwitchEngine(PlaybackEngine.DEFAULT, true)
                     },
                     onDismiss = { showEngineSheet = false }
+                )
+            }
+            if (showCatchUpSheet && activeChannel != null) {
+                InPlayerCatchUpModalSheet(
+                    channel = activeChannel,
+                    epgByChannel = epgByChannel,
+                    nowMs = nowMs,
+                    onPlayProgram = { prog -> onPlayCatchUp(activeChannel, prog) },
+                    onReturnToLive = { onReturnToLive(activeChannel) },
+                    onDismiss = { showCatchUpSheet = false }
                 )
             }
         }

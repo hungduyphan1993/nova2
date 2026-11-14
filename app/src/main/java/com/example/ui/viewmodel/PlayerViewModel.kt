@@ -13,6 +13,7 @@ import com.example.data.local.MpvHardwareMode
 import com.example.data.local.PlaybackEngine
 import com.example.data.local.SeriesEpisodeEntity
 import com.example.data.local.StreamItemEntity
+import com.example.data.local.SubtitleSizePreset
 import com.example.data.local.VlcHardwareMode
 import com.example.data.local.WatchProgressEntity
 import com.example.data.repository.NovaStreamRepository
@@ -77,6 +78,8 @@ data class PlayerUiState(
     val mpvHardwareMode: MpvHardwareMode = MpvHardwareMode.AUTO_SAFE,
     val telemetry: StreamTelemetry = StreamTelemetry(),
     val aspectRatioMode: AspectRatioMode = AspectRatioMode.FIT,
+    val subtitleSize: SubtitleSizePreset = SubtitleSizePreset.NORMAL,
+    val osdTimeoutSec: Int = 5,
     val audioOnlyMode: Boolean = false,
     val showSignalHud: Boolean = false,
     val sleepTimerRemainingSec: Int? = null,
@@ -130,6 +133,10 @@ class PlayerViewModel(
     private var currentVlcHardwareMode = VlcHardwareMode.AUTO
     private var currentMpvHardwareMode = MpvHardwareMode.AUTO_SAFE
     private var currentAutoFallbackEngine = true
+    private var currentSubtitleSize = SubtitleSizePreset.NORMAL
+    private var currentPreferredAudioLang = ""
+    private var currentPreferredSubLang = ""
+    private var currentOsdTimeoutSec = 5
     private val attemptedBuiltInEngines = mutableSetOf<PlaybackEngine>()
 
     init {
@@ -141,17 +148,25 @@ class PlayerViewModel(
                 currentVlcHardwareMode = prefs.vlcHardwareMode
                 currentMpvHardwareMode = prefs.mpvHardwareMode
                 currentAutoFallbackEngine = prefs.autoFallbackEngine
+                currentSubtitleSize = prefs.subtitleSize
+                currentPreferredAudioLang = prefs.preferredAudioLanguage
+                currentPreferredSubLang = prefs.preferredSubtitleLanguage
+                currentOsdTimeoutSec = prefs.osdTimeoutSec
                 _uiState.update { state ->
                     if (state.mode == PlayerPresentationMode.HIDDEN) {
                         state.copy(
                             aspectRatioMode = prefs.defaultAspectRatio,
                             vlcHardwareMode = prefs.vlcHardwareMode,
-                            mpvHardwareMode = prefs.mpvHardwareMode
+                            mpvHardwareMode = prefs.mpvHardwareMode,
+                            subtitleSize = prefs.subtitleSize,
+                            osdTimeoutSec = prefs.osdTimeoutSec
                         )
                     } else {
                         state.copy(
                             vlcHardwareMode = prefs.vlcHardwareMode,
-                            mpvHardwareMode = prefs.mpvHardwareMode
+                            mpvHardwareMode = prefs.mpvHardwareMode,
+                            subtitleSize = prefs.subtitleSize,
+                            osdTimeoutSec = prefs.osdTimeoutSec
                         )
                     }
                 }
@@ -166,8 +181,9 @@ class PlayerViewModel(
     private fun pulseInfoBanner() {
         infoBannerJob?.cancel()
         _uiState.update { it.copy(showInfoBanner = true) }
+        val durationMs = (currentOsdTimeoutSec.takeIf { it > 0 } ?: 5) * 1000L
         infoBannerJob = viewModelScope.launch {
-            delay(5000)
+            delay(durationMs)
             _uiState.update { it.copy(showInfoBanner = false) }
         }
     }
@@ -205,6 +221,7 @@ class PlayerViewModel(
         explicitEngine: PlaybackEngine? = null
     ) {
         currentProfileUserAgent = userAgent
+        viewModelScope.launch { repository.prefs.setLastLiveStreamId(stream.id) }
         launchPlayback(
             stream = stream,
             overrideUrl = null,
@@ -231,11 +248,14 @@ class PlayerViewModel(
         explicitEngine: PlaybackEngine? = null
     ) {
         currentProfileUserAgent = userAgent
+        val dateLabel = com.example.ui.components.NovaFormatters.formatDayTabSubtitle(program.startEpochMs)
+        val startClock = com.example.ui.components.NovaFormatters.formatClock(program.startEpochMs)
+        val endClock = com.example.ui.components.NovaFormatters.formatClock(program.endEpochMs)
         launchPlayback(
             stream = stream,
             overrideUrl = archiveUrl,
             title = "${stream.title} • ${program.title}",
-            subtitle = "CATCH-UP ARCHIVE",
+            subtitle = "CATCH-UP • $dateLabel • $startClock–$endClock",
             isLive = false,
             isCatchUp = true,
             startPositionMs = 0L,
@@ -448,6 +468,9 @@ class PlayerViewModel(
                     bufferPreset = currentBufferPreset,
                     hwMode = currentMpvHardwareMode,
                     aspectRatioMode = _uiState.value.aspectRatioMode,
+                    subtitleScale = currentSubtitleSize.scaleFactor,
+                    preferredAudioLanguage = currentPreferredAudioLang,
+                    preferredSubtitleLanguage = currentPreferredSubLang,
                     startPositionMs = startPositionMs,
                     onError = handleEngineError,
                     onTelemetryChanged = { telemetry ->
@@ -464,6 +487,8 @@ class PlayerViewModel(
                     overrideUrl = overrideUrl,
                     profileUserAgent = currentProfileUserAgent,
                     bufferPreset = currentBufferPreset,
+                    preferredAudioLanguage = currentPreferredAudioLang,
+                    preferredSubtitleLanguage = currentPreferredSubLang,
                     startPositionMs = startPositionMs,
                     onError = handleEngineError,
                     onTelemetryChanged = { telemetry ->

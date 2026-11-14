@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.AdultCategoryClassifier
 import com.example.data.local.AspectRatioMode
 import com.example.data.local.BufferPreset
 import com.example.data.local.CategoryEntity
@@ -11,6 +12,8 @@ import com.example.data.local.MediaCategoryType
 import com.example.data.local.MpvHardwareMode
 import com.example.data.local.PlaybackEngine
 import com.example.data.local.PlaylistProfileEntity
+import com.example.data.local.StartupBehavior
+import com.example.data.local.SubtitleSizePreset
 import com.example.data.local.UserPreferences
 import com.example.data.local.VlcHardwareMode
 import com.example.data.network.DiagnosticReport
@@ -63,6 +66,24 @@ class MainViewModel(
             if (prefs.activeProfileId > 0) repository.observeAllCategories(prefs.activeProfileId) else flowOf(emptyList())
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val favoriteCount: StateFlow<Int> = preferences
+        .flatMapLatest { prefs ->
+            if (prefs.activeProfileId > 0) repository.observeFavoriteCount(prefs.activeProfileId) else flowOf(0)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val historyCount: StateFlow<Int> = preferences
+        .flatMapLatest { prefs ->
+            if (prefs.activeProfileId > 0) repository.observeHistoryCount(prefs.activeProfileId) else flowOf(0)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val epgCount: StateFlow<Int> = preferences
+        .flatMapLatest { prefs ->
+            if (prefs.activeProfileId > 0) repository.observeEpgCount(prefs.activeProfileId) else flowOf(0)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     private val _syncStage = MutableStateFlow<SyncStage>(SyncStage.Idle)
     val syncStage: StateFlow<SyncStage> = _syncStage.asStateFlow()
@@ -241,6 +262,63 @@ class MainViewModel(
         viewModelScope.launch { repository.setCategoryLocked(categoryId, locked) }
     }
 
+    fun setCategoriesLocked(ids: List<Long>, locked: Boolean, feedbackLabel: String? = null) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            repository.setCategoriesLocked(ids, locked)
+            feedbackLabel?.let { _toastMessage.value = it }
+        }
+    }
+
+    fun setCategoriesHidden(ids: List<Long>, hidden: Boolean, feedbackLabel: String? = null) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            repository.setCategoriesHidden(ids, hidden)
+            feedbackLabel?.let { _toastMessage.value = it }
+        }
+    }
+
+    fun lockAllAdultCategories() {
+        val adultCats = allCategories.value.filter { AdultCategoryClassifier.isAdultCategoryName(it.name) }
+        if (adultCats.isEmpty()) {
+            _toastMessage.value = "No Adult / 18+ / XXX categories found in playlist"
+            return
+        }
+        setCategoriesLocked(adultCats.map { it.id }, true, "Locked ${adultCats.size} Adult / 18+ / XXX categories")
+    }
+
+    fun unlockAllAdultCategories() {
+        val adultCats = allCategories.value.filter { AdultCategoryClassifier.isAdultCategoryName(it.name) }
+        if (adultCats.isEmpty()) return
+        setCategoriesLocked(adultCats.map { it.id }, false, "Unlocked ${adultCats.size} Adult / 18+ / XXX categories")
+    }
+
+    fun hideAllAdultCategories() {
+        val adultCats = allCategories.value.filter { AdultCategoryClassifier.isAdultCategoryName(it.name) }
+        if (adultCats.isEmpty()) {
+            _toastMessage.value = "No Adult / 18+ / XXX categories found in playlist"
+            return
+        }
+        setCategoriesHidden(adultCats.map { it.id }, true, "Hidden ${adultCats.size} Adult / 18+ / XXX categories")
+    }
+
+    fun setAutoLockAdultCategories(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.prefs.setAutoLockAdultCategories(enabled)
+            if (enabled) {
+                val profileId = activeProfile.value?.id ?: -1L
+                val newlyLocked = if (profileId > 0) repository.applyAdultAutoLockForProfile(profileId) else 0
+                _toastMessage.value = if (newlyLocked > 0) {
+                    "Auto-lock enabled • Locked $newlyLocked Adult/18+/XXX folder(s)"
+                } else {
+                    "Auto-lock enabled for Adult / 18+ / XXX categories"
+                }
+            } else {
+                _toastMessage.value = "Auto-lock disabled for new syncs"
+            }
+        }
+    }
+
     fun setBufferPreset(preset: BufferPreset) {
         viewModelScope.launch { repository.prefs.setBufferPreset(preset) }
     }
@@ -278,6 +356,70 @@ class MainViewModel(
 
     fun setAutoReconnectLive(enabled: Boolean) {
         viewModelScope.launch { repository.prefs.setAutoReconnect(enabled) }
+    }
+
+    fun setSubtitleSize(size: SubtitleSizePreset) {
+        viewModelScope.launch { repository.prefs.setSubtitleSize(size) }
+    }
+
+    fun setPreferredAudioLanguage(langCode: String) {
+        viewModelScope.launch { repository.prefs.setPreferredAudioLanguage(langCode) }
+    }
+
+    fun setPreferredSubtitleLanguage(langCode: String) {
+        viewModelScope.launch { repository.prefs.setPreferredSubtitleLanguage(langCode) }
+    }
+
+    fun setOsdTimeoutSec(seconds: Int) {
+        viewModelScope.launch { repository.prefs.setOsdTimeoutSec(seconds) }
+    }
+
+    fun setUse24HourClock(use24Hour: Boolean) {
+        viewModelScope.launch { repository.prefs.setUse24HourClock(use24Hour) }
+    }
+
+    fun setStartupBehavior(behavior: StartupBehavior) {
+        viewModelScope.launch { repository.prefs.setStartupBehavior(behavior) }
+    }
+
+    fun updateProfileUserAgent(userAgent: String) {
+        val profile = activeProfile.value ?: return
+        viewModelScope.launch {
+            repository.updateProfileUserAgent(profile.id, userAgent)
+            _toastMessage.value = "User-Agent updated"
+        }
+    }
+
+    fun clearWatchHistory() {
+        val profileId = activeProfile.value?.id ?: return
+        viewModelScope.launch {
+            repository.clearWatchHistory(profileId)
+            _toastMessage.value = "Watch history cleared"
+        }
+    }
+
+    fun clearFavorites() {
+        val profileId = activeProfile.value?.id ?: return
+        viewModelScope.launch {
+            repository.clearFavorites(profileId)
+            _toastMessage.value = "Favorites cleared"
+        }
+    }
+
+    fun clearEpgCache() {
+        val profileId = activeProfile.value?.id ?: return
+        viewModelScope.launch {
+            repository.clearEpgCache(profileId)
+            _toastMessage.value = "EPG cache cleared"
+        }
+    }
+
+    fun clearEngineOverrides() {
+        val profileId = activeProfile.value?.id ?: return
+        viewModelScope.launch {
+            repository.clearEngineOverrides(profileId)
+            _toastMessage.value = "Per-channel player overrides reset"
+        }
     }
 
     fun adjustEpgOffset(deltaMinutes: Int) {

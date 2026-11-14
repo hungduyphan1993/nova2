@@ -97,7 +97,13 @@ data class StreamItemEntity(
     val isLocked: Boolean = false,
     val preferredEngine: String = "",
     val addedAt: Long = 0L
-)
+) {
+    val supportsCatchUp: Boolean
+        get() = catchupDays > 0 || catchupType.isNotBlank() || catchupSource.isNotBlank()
+
+    val effectiveEpgKey: String
+        get() = epgChannelId.takeIf { it.isNotBlank() } ?: "stream_$remoteStreamId"
+}
 
 @Entity(
     tableName = "series_episodes",
@@ -166,3 +172,13 @@ data class MediaTypeCount(
     val mediaType: MediaCategoryType,
     val total: Int
 )
+
+object AdultCategoryClassifier {
+    private val adultRegex = Regex("(?i)(?:18\\+|\\+18|xxx|\\badults?\\b|\\bnsfw\\b|\\bporn\\w*|\\berotic\\w*)")
+
+    fun isAdultCategoryName(name: String): Boolean {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return false
+        return adultRegex.containsMatchIn(trimmed)
+    }
+}

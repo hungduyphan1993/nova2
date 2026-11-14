@@ -41,9 +41,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.data.local.MediaCategoryType
+import com.example.data.local.StartupBehavior
 import com.example.player.ExternalPlayerHelper
 import com.example.ui.components.DockedMiniPlayerBar
+import com.example.ui.components.NovaFormatters
 import com.example.ui.components.PinVerificationDialog
+import com.example.ui.navigation.CatchUpGuideRoute
 import com.example.ui.navigation.DashboardRoute
 import com.example.ui.navigation.DiagnosticsRoute
 import com.example.ui.navigation.EpgGuideRoute
@@ -56,6 +59,7 @@ import com.example.ui.navigation.SearchRoute
 import com.example.ui.navigation.SeriesDetailRoute
 import com.example.ui.navigation.SeriesRoute
 import com.example.ui.navigation.SettingsRoute
+import com.example.ui.screens.CatchUpGuideScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DiagnosticsScreen
 import com.example.ui.screens.EpgGuideScreen
@@ -192,6 +196,14 @@ private fun NovaStreamRoot(
     val isRunningDiagnostics by mainVm.isRunningDiagnostics.collectAsStateWithLifecycle()
     val toastMessage by mainVm.toastMessage.collectAsStateWithLifecycle()
 
+    val favoriteCount by mainVm.favoriteCount.collectAsStateWithLifecycle()
+    val historyCount by mainVm.historyCount.collectAsStateWithLifecycle()
+    val epgCount by mainVm.epgCount.collectAsStateWithLifecycle()
+
+    LaunchedEffect(preferences.use24HourClock) {
+        NovaFormatters.use24HourClock = preferences.use24HourClock
+    }
+
     val liveCategories by catalogVm.liveCategories.collectAsStateWithLifecycle()
     val movieCategories by catalogVm.movieCategories.collectAsStateWithLifecycle()
     val seriesCategories by catalogVm.seriesCategories.collectAsStateWithLifecycle()
@@ -201,6 +213,7 @@ private fun NovaStreamRoot(
     val favorites by catalogVm.favorites.collectAsStateWithLifecycle()
     val watchProgress by catalogVm.watchProgress.collectAsStateWithLifecycle()
     val epgByChannel by catalogVm.epgByChannel.collectAsStateWithLifecycle()
+    val isSyncingCatchUp by catalogVm.isSyncingCatchUp.collectAsStateWithLifecycle()
     val searchQuery by catalogVm.searchQuery.collectAsStateWithLifecycle()
     val searchResult by catalogVm.searchResult.collectAsStateWithLifecycle()
     val isSearching by catalogVm.isSearching.collectAsStateWithLifecycle()
@@ -213,6 +226,7 @@ private fun NovaStreamRoot(
     val muteAllMulti by playerVm.muteAllMulti.collectAsStateWithLifecycle()
 
     var initialRouteResolved by remember { mutableStateOf<Any?>(null) }
+    var startupActionApplied by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val prefsSnapshot = appContainer.preferences.preferencesFlow.first()
         initialRouteResolved = if (prefsSnapshot.activeProfileId > 0L) DashboardRoute else OnboardingRoute
@@ -265,6 +279,33 @@ private fun NovaStreamRoot(
 
     val navController = rememberNavController()
     val userAgent = activeProfile?.userAgent ?: "NovaStream/1.0 (Android)"
+
+    LaunchedEffect(initialRouteResolved, preferences.startupBehavior, preferences.lastLiveStreamId, liveStreams) {
+        if (!startupActionApplied && initialRouteResolved == DashboardRoute) {
+            when (preferences.startupBehavior) {
+                StartupBehavior.DASHBOARD -> {
+                    startupActionApplied = true
+                }
+                StartupBehavior.LIVE_TV -> {
+                    startupActionApplied = true
+                    navController.navigate(LiveTvRoute())
+                }
+                StartupBehavior.RESUME_LAST_LIVE -> {
+                    if (preferences.lastLiveStreamId <= 0L) {
+                        startupActionApplied = true
+                    } else if (liveStreams.isNotEmpty()) {
+                        startupActionApplied = true
+                        val lastCh = liveStreams.firstOrNull { it.id == preferences.lastLiveStreamId }
+                        if (lastCh != null) {
+                            mainVm.requestUnlockOrProceed(lastCh.isLocked, "Unlock channel: ${lastCh.title}") {
+                                playerVm.playLiveChannel(lastCh, liveStreams, userAgent, openFullscreen = true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Scaffold(
         containerColor = ObsidianBg,
@@ -348,7 +389,7 @@ private fun NovaStreamRoot(
                         onOpenSeries = { navController.navigate(SeriesRoute) },
                         onOpenEpg = { navController.navigate(EpgGuideRoute) },
                         onOpenMultiScreen = { navController.navigate(MultiScreenRoute) },
-                        onOpenCatchUp = { navController.navigate(LiveTvRoute(catchupOnly = true)) },
+                        onOpenCatchUp = { navController.navigate(CatchUpGuideRoute()) },
                         onOpenFavorites = { navController.navigate(LiveTvRoute(favoritesOnly = true)) },
                         onOpenSearch = { navController.navigate(SearchRoute) },
                         onOpenDiagnostics = { navController.navigate(DiagnosticsRoute) },
@@ -409,6 +450,9 @@ private fun NovaStreamRoot(
                         },
                         onSetStreamEngine = { item, engine ->
                             catalogVm.setStreamPreferredEngine(item, engine)
+                        },
+                        onOpenCatchUpGuide = { ch ->
+                            navController.navigate(CatchUpGuideRoute(ch?.id))
                         },
                         onPlayChannel = { ch, queue, explicitEngine ->
                             playerVm.playLiveChannel(
@@ -520,7 +564,59 @@ private fun NovaStreamRoot(
                             val archiveUrl = catalogVm.resolveCatchUpUrl(profile, ch, prog)
                             playerVm.playCatchUpProgram(ch, prog, archiveUrl, userAgent)
                         },
+                        onOpenCatchUpGuide = { ch ->
+                            navController.navigate(CatchUpGuideRoute(ch?.id))
+                        },
                         onToggleReminder = { prog -> catalogVm.toggleProgramReminder(prog) }
+                    )
+                }
+
+                composable<CatchUpGuideRoute> { entry ->
+                    val args = entry.toRoute<CatchUpGuideRoute>()
+                    CatchUpGuideScreen(
+                        widthSizeClass = widthSizeClass,
+                        categories = liveCategories,
+                        liveStreams = liveStreams,
+                        epgByChannel = epgByChannel,
+                        initialChannelDbId = args.initialChannelDbId,
+                        isSyncingArchive = isSyncingCatchUp,
+                        isPinSessionUnlocked = isPinSessionUnlocked,
+                        hasPinConfigured = preferences.hasPinConfigured,
+                        defaultEngine = preferences.defaultEngine,
+                        onBack = { navController.popBackStack() },
+                        onRequestUnlock = { locked, reason, action ->
+                            mainVm.requestUnlockOrProceed(locked, reason, action)
+                        },
+                        onLoadChannelArchive = { ch, force ->
+                            activeProfile?.id?.let { pid ->
+                                catalogVm.loadChannelCatchUpArchive(pid, ch, force)
+                            }
+                        },
+                        onSetStreamEngine = { item, engine ->
+                            catalogVm.setStreamPreferredEngine(item, engine)
+                        },
+                        onPlayCatchUp = { ch, prog, explicitEngine ->
+                            val profile = activeProfile ?: return@CatchUpGuideScreen
+                            val archiveUrl = catalogVm.resolveCatchUpUrl(profile, ch, prog)
+                            playerVm.playCatchUpProgram(
+                                stream = ch,
+                                program = prog,
+                                archiveUrl = archiveUrl,
+                                userAgent = userAgent,
+                                explicitEngine = explicitEngine
+                            )
+                        },
+                        onTuneLive = { ch, explicitEngine ->
+                            playerVm.playLiveChannel(
+                                stream = ch,
+                                channelQueue = liveStreams,
+                                userAgent = userAgent,
+                                openFullscreen = true,
+                                explicitEngine = explicitEngine
+                            )
+                        },
+                        onOpenEpgGrid = { navController.navigate(EpgGuideRoute) },
+                        onOpenLiveTv = { navController.navigate(LiveTvRoute()) }
                     )
                 }
 
@@ -561,11 +657,31 @@ private fun NovaStreamRoot(
 
                 composable<SettingsRoute> {
                     SettingsScreen(
+                        widthSizeClass = widthSizeClass,
                         preferences = preferences,
+                        activeProfile = activeProfile,
                         categories = allCategories,
+                        syncStage = syncStage,
+                        favoriteCount = favoriteCount,
+                        historyCount = historyCount,
+                        epgCount = epgCount,
                         onBack = { navController.popBackStack() },
+                        onDismissSync = { mainVm.dismissSyncStage() },
+                        onRefreshSync = { mainVm.refreshActiveProfile() },
+                        onOpenProfiles = { navController.navigate(OnboardingRoute) },
+                        onOpenDiagnostics = { navController.navigate(DiagnosticsRoute) },
+                        onUpdateUserAgent = { mainVm.updateProfileUserAgent(it) },
+                        onAdjustEpgOffset = { mainVm.adjustEpgOffset(it) },
                         onSetPin = { mainVm.setParentalPin(it) },
                         onClearPin = { mainVm.clearParentalPin() },
+                        onRelockSession = { mainVm.relockSession() },
+                        onRequestUnlock = { locked, reason, action ->
+                            mainVm.requestUnlockOrProceed(locked, reason, action)
+                        },
+                        onSetAutoLockAdultCategories = { mainVm.setAutoLockAdultCategories(it) },
+                        onLockAllAdultCategories = { mainVm.lockAllAdultCategories() },
+                        onUnlockAllAdultCategories = { mainVm.unlockAllAdultCategories() },
+                        onHideAllAdultCategories = { mainVm.hideAllAdultCategories() },
                         onSetDefaultEngine = { mainVm.setDefaultEngine(it) },
                         onSetVlcHwMode = { mainVm.setVlcHardwareMode(it) },
                         onSetMpvHwMode = { mainVm.setMpvHardwareMode(it) },
@@ -574,13 +690,25 @@ private fun NovaStreamRoot(
                         onSetDefaultAspect = { mainVm.setDefaultAspectRatio(it) },
                         onSetAutoPip = { mainVm.setAutoPip(it) },
                         onSetAutoReconnect = { mainVm.setAutoReconnectLive(it) },
+                        onSetSubtitleSize = { mainVm.setSubtitleSize(it) },
+                        onSetPreferredAudioLanguage = { mainVm.setPreferredAudioLanguage(it) },
+                        onSetPreferredSubtitleLanguage = { mainVm.setPreferredSubtitleLanguage(it) },
+                        onSetOsdTimeoutSec = { mainVm.setOsdTimeoutSec(it) },
+                        onSetUse24HourClock = { mainVm.setUse24HourClock(it) },
+                        onSetStartupBehavior = { mainVm.setStartupBehavior(it) },
                         onToggleCatPinned = { id, p -> mainVm.setCategoryPinned(id, p) },
                         onToggleCatHidden = { id, h -> mainVm.setCategoryHidden(id, h) },
-                        onToggleCatLocked = { id, l ->
-                            mainVm.requestUnlockOrProceed(preferences.hasPinConfigured, "Change folder lock") {
-                                mainVm.setCategoryLocked(id, l)
-                            }
+                        onToggleCatLocked = { id, l -> mainVm.setCategoryLocked(id, l) },
+                        onBulkSetCatLocked = { ids, locked ->
+                            mainVm.setCategoriesLocked(ids, locked, if (locked) "Locked ${ids.size} categories" else "Unlocked ${ids.size} categories")
                         },
+                        onBulkSetCatHidden = { ids, hidden ->
+                            mainVm.setCategoriesHidden(ids, hidden, if (hidden) "Hidden ${ids.size} categories" else "Restored ${ids.size} categories")
+                        },
+                        onClearWatchHistory = { mainVm.clearWatchHistory() },
+                        onClearFavorites = { mainVm.clearFavorites() },
+                        onClearEpgCache = { mainVm.clearEpgCache() },
+                        onClearEngineOverrides = { mainVm.clearEngineOverrides() },
                         onExportBackup = { mainVm.exportBackup(it) },
                         onImportBackup = { uri ->
                             mainVm.importBackup(uri) {
@@ -616,9 +744,10 @@ private fun NovaStreamRoot(
                     }
                 }
                 val miniNowProgram = remember(playerUiState.activeStream, epgByChannel, miniNowMs) {
-                    val epgId = playerUiState.activeStream?.epgChannelId
-                    if (epgId.isNullOrBlank()) null
-                    else epgByChannel[epgId]?.firstOrNull { miniNowMs in it.startEpochMs until it.endEpochMs }
+                    val stream = playerUiState.activeStream
+                    val byPrimary = stream?.epgChannelId?.takeIf { it.isNotBlank() }?.let { epgByChannel[it] }.orEmpty()
+                    val progs = if (byPrimary.isNotEmpty()) byPrimary else stream?.let { epgByChannel[it.effectiveEpgKey] }.orEmpty()
+                    progs.firstOrNull { miniNowMs in it.startEpochMs until it.endEpochMs }
                 }
 
                 DockedMiniPlayerBar(
@@ -659,7 +788,7 @@ private fun NovaStreamRoot(
                     onSeekTo = { playerVm.seekTo(it) },
                     onZapChannel = { playerVm.zapChannel(it) },
                     onSelectChannel = { ch ->
-                        playerVm.playLiveChannel(ch, playerUiState.activePlaylistQueue, userAgent, openFullscreen = true)
+                        playerVm.playLiveChannel(ch, playerUiState.activePlaylistQueue.ifEmpty { liveStreams }, userAgent, openFullscreen = true)
                     },
                     onDirectJumpChannel = { num -> playerVm.jumpToChannelNumber(num) },
                     onPlayNextEpisode = { playerVm.playNextEpisode() },
@@ -671,7 +800,25 @@ private fun NovaStreamRoot(
                     onSwitchEngine = { target, save -> playerVm.switchEngine(target, save) },
                     onSetSleepTimer = { playerVm.setSleepTimer(it) },
                     onRetryStream = { playerVm.retryActiveStream() },
-                    onEnterPip = onRequestPip
+                    onEnterPip = onRequestPip,
+                    onLoadChannelArchive = { ch ->
+                        activeProfile?.id?.let { pid ->
+                            catalogVm.loadChannelCatchUpArchive(pid, ch, false)
+                        }
+                    },
+                    onPlayCatchUp = { ch, prog ->
+                        val profile = activeProfile ?: return@PlayerOverlayScreen
+                        val archiveUrl = catalogVm.resolveCatchUpUrl(profile, ch, prog)
+                        playerVm.playCatchUpProgram(ch, prog, archiveUrl, userAgent)
+                    },
+                    onReturnToLive = { ch ->
+                        playerVm.playLiveChannel(
+                            ch,
+                            playerUiState.activePlaylistQueue.ifEmpty { liveStreams },
+                            userAgent,
+                            openFullscreen = true
+                        )
+                    }
                 )
             }
 

@@ -32,6 +32,9 @@ data class SeriesDetailRoute(val streamDbId: Long)
 object EpgGuideRoute
 
 @Serializable
+data class CatchUpGuideRoute(val initialChannelDbId: Long? = null)
+
+@Serializable
 object MultiScreenRoute
 
 @Serializable

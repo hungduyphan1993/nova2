@@ -1,17 +1,27 @@
 package com.example.data.network
 
 import com.example.data.local.CategoryEntity
+import com.example.data.local.EpgProgramEntity
 import com.example.data.local.MediaCategoryType
 import com.example.data.local.SeriesEpisodeEntity
 import com.example.data.local.StreamItemEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 data class XtreamAccountInfo(
     val status: String,
@@ -33,6 +43,8 @@ class XtreamApiService(
     private val okHttpClient: OkHttpClient = defaultClient()
 ) {
     companion object {
+        private val lenientJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
@@ -46,6 +58,80 @@ class XtreamApiService(
             } else {
                 "http://$trimmed"
             }
+        }
+
+        @OptIn(ExperimentalEncodingApi::class)
+        fun decodeMaybeBase64(raw: String): String {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return ""
+            // Only attempt Base64 decode when characters look like standard Base64 without spaces
+            if (' ' in trimmed || trimmed.length < 4) return trimmed
+            return runCatching {
+                val padded = when (trimmed.length % 4) {
+                    2 -> "$trimmed=="
+                    3 -> "$trimmed="
+                    else -> trimmed
+                }
+                val bytes = Base64.decode(padded)
+                val decoded = bytes.toString(Charsets.UTF_8)
+                if (decoded.isNotBlank() && decoded.none { it.code < 9 || it == '\uFFFD' }) {
+                    decoded.trim()
+                } else {
+                    trimmed
+                }
+            }.getOrDefault(trimmed)
+        }
+
+        fun parseSimpleDataTableJson(
+            rawJson: String,
+            profileId: Long,
+            targetChannelKey: String,
+            offsetMinutes: Int = 0
+        ): List<EpgProgramEntity> {
+            val root = runCatching { lenientJson.parseToJsonElement(rawJson).jsonObject }.getOrNull()
+                ?: return emptyList()
+            val arr = runCatching { root["epg_listings"]?.jsonArray }.getOrNull()
+                ?: return emptyList()
+            val offsetMs = offsetMinutes * 60_000L
+            val fallbackFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val out = ArrayList<EpgProgramEntity>(arr.size)
+            for (element in arr) {
+                val obj = runCatching { element.jsonObject }.getOrNull() ?: continue
+                val startSec = obj["start_timestamp"]?.jsonPrimitive?.content?.toLongOrNull()
+                val stopSec = obj["stop_timestamp"]?.jsonPrimitive?.content?.toLongOrNull()
+
+                val startMs = if (startSec != null && startSec > 0L) {
+                    startSec * 1000L + offsetMs
+                } else {
+                    val startStr = obj["start"]?.jsonPrimitive?.content.orEmpty()
+                    runCatching { (fallbackFmt.parse(startStr)?.time ?: 0L) + offsetMs }.getOrDefault(0L)
+                }
+                val endMs = if (stopSec != null && stopSec > 0L) {
+                    stopSec * 1000L + offsetMs
+                } else {
+                    val endStr = obj["end"]?.jsonPrimitive?.content.orEmpty()
+                    runCatching { (fallbackFmt.parse(endStr)?.time ?: 0L) + offsetMs }.getOrDefault(0L)
+                }
+                if (startMs <= 0L || endMs <= startMs) continue
+
+                val rawTitle = obj["title"]?.jsonPrimitive?.content.orEmpty()
+                val rawDesc = obj["description"]?.jsonPrimitive?.content.orEmpty()
+                val title = decodeMaybeBase64(rawTitle).ifBlank { "Broadcast Slot" }
+                val desc = decodeMaybeBase64(rawDesc)
+                out.add(
+                    EpgProgramEntity(
+                        profileId = profileId,
+                        epgChannelId = targetChannelKey,
+                        title = title,
+                        description = desc,
+                        startEpochMs = startMs,
+                        endEpochMs = endMs
+                    )
+                )
+            }
+            return out.sortedBy { it.startEpochMs }
         }
     }
 
@@ -283,6 +369,28 @@ class XtreamApiService(
             }
         }
         out
+    }
+
+    suspend fun fetchCatchUpEpgTable(
+        profileId: Long,
+        serverUrl: String,
+        username: String,
+        password: String,
+        userAgent: String,
+        streamRemoteId: String,
+        targetChannelKey: String,
+        offsetMinutes: Int = 0
+    ): List<EpgProgramEntity> = withContext(Dispatchers.IO) {
+        if (streamRemoteId.isBlank()) return@withContext emptyList()
+        val base = normalizeServerUrl(serverUrl)
+        val url = "$base/player_api.php?username=$username&password=$password&action=get_simple_data_table&stream_id=$streamRemoteId"
+        val raw = runCatching { executeGetString(url, userAgent) }.getOrNull() ?: return@withContext emptyList()
+        parseSimpleDataTableJson(
+            rawJson = raw,
+            profileId = profileId,
+            targetChannelKey = targetChannelKey,
+            offsetMinutes = offsetMinutes
+        )
     }
 
     fun buildXmltvUrl(serverUrl: String, username: String, password: String): String {

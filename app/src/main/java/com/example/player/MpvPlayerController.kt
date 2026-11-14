@@ -97,6 +97,9 @@ class MpvPlayerController(private val context: Context) {
         bufferPreset: BufferPreset,
         hwMode: MpvHardwareMode,
         aspectRatioMode: AspectRatioMode,
+        subtitleScale: Float = 1.0f,
+        preferredAudioLanguage: String = "",
+        preferredSubtitleLanguage: String = "",
         startPositionMs: Long = 0L,
         onError: (String) -> Unit = {},
         onTelemetryChanged: (StreamTelemetry) -> Unit = {},
@@ -133,6 +136,22 @@ class MpvPlayerController(private val context: Context) {
             engine.setPropertyString("http-header-fields", headerFields)
             engine.setPropertyString("demuxer-max-bytes", maxCacheBytes)
             engine.setPropertyDouble("cache-secs", cacheSecs)
+            engine.setPropertyDouble("sub-scale", subtitleScale.toDouble())
+            engine.setPropertyString("alang", preferredAudioLanguage)
+            when {
+                preferredSubtitleLanguage.equals("off", ignoreCase = true) -> {
+                    engine.setPropertyString("slang", "")
+                    engine.setPropertyString("sid", "no")
+                }
+                preferredSubtitleLanguage.isNotBlank() -> {
+                    engine.setPropertyString("slang", preferredSubtitleLanguage)
+                    engine.setPropertyString("sid", "auto")
+                }
+                else -> {
+                    engine.setPropertyString("slang", "")
+                    engine.setPropertyString("sid", "auto")
+                }
+            }
 
             // Re-bind surface if already mounted in Compose
             attachedSurface?.takeIf { it.isValid }?.let { surface ->

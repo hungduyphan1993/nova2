@@ -442,8 +442,8 @@ fun DashboardScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 QuickDeckCard(
-                    title = "Catch-Up TV",
-                    subtitle = "Archived Replay",
+                    title = "Catch-Up Guide",
+                    subtitle = "Multi-Day Replay",
                     icon = Icons.Default.History,
                     accent = UltravioletPulse,
                     modifier = Modifier.weight(1f).testTag("deck_catchup"),

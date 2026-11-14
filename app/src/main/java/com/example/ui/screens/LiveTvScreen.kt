@@ -95,6 +95,7 @@ fun LiveTvScreen(
     onToggleFavorite: (StreamItemEntity) -> Unit,
     onToggleStreamLock: (StreamItemEntity) -> Unit,
     onSetStreamEngine: (StreamItemEntity, PlaybackEngine) -> Unit,
+    onOpenCatchUpGuide: (StreamItemEntity?) -> Unit,
     onPlayChannel: (StreamItemEntity, List<StreamItemEntity>, PlaybackEngine?) -> Unit
 ) {
     var selectedCategoryKey by remember(initialCategoryKey) { mutableStateOf(initialCategoryKey ?: "ALL") }
@@ -173,9 +174,18 @@ fun LiveTvScreen(
                 FilterChip(
                     selected = catchupOnly,
                     onClick = { catchupOnly = !catchupOnly },
-                    label = { Text("Catch-Up TV") },
+                    label = { Text("Catch-Up Filter") },
                     leadingIcon = { Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(16.dp)) },
                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = UltravioletPulse.copy(alpha = 0.28f))
+                )
+            }
+            item {
+                FilterChip(
+                    selected = false,
+                    onClick = { onOpenCatchUpGuide(focusedChannel?.takeIf { it.supportsCatchUp }) },
+                    label = { Text("Catch-Up Guide", color = UltravioletPulse) },
+                    leadingIcon = { Icon(Icons.Default.History, contentDescription = null, tint = UltravioletPulse, modifier = Modifier.size(16.dp)) },
+                    modifier = Modifier.testTag("live_open_catchup_guide")
                 )
             }
             if (!isWide) {
@@ -267,6 +277,13 @@ fun LiveTvScreen(
                                     enginePickerChannel = ch
                                 }
                             },
+                            onOpenCatchUp = if (ch.supportsCatchUp) {
+                                {
+                                    onRequestUnlock(ch.isLocked, "Unlock Catch-Up guide: ${ch.title}") {
+                                        onOpenCatchUpGuide(ch)
+                                    }
+                                }
+                            } else null,
                             onToggleFav = { onToggleFavorite(ch) },
                             onToggleLock = { onToggleStreamLock(ch) }
                         )
@@ -347,6 +364,21 @@ fun LiveTvScreen(
                                     }
                                 )
                             }
+                            if (preview.supportsCatchUp) {
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        onRequestUnlock(preview.isLocked, "Unlock Catch-Up guide: ${preview.title}") {
+                                            onOpenCatchUpGuide(preview)
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().testTag("live_preview_catchup_button")
+                                ) {
+                                    Icon(Icons.Default.History, contentDescription = null, tint = UltravioletPulse, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Catch-Up Archive Guide", color = UltravioletPulse)
+                                }
+                            }
                             Spacer(Modifier.height(14.dp))
                             Text("Upcoming Schedule", style = MaterialTheme.typography.titleSmall, color = ElectricCyan)
                             Spacer(Modifier.height(8.dp))
@@ -394,6 +426,13 @@ fun LiveTvScreen(
                                 enginePickerChannel = ch
                             }
                         },
+                        onOpenCatchUp = if (ch.supportsCatchUp) {
+                            {
+                                onRequestUnlock(ch.isLocked, "Unlock Catch-Up guide: ${ch.title}") {
+                                    onOpenCatchUpGuide(ch)
+                                }
+                            }
+                        } else null,
                         onToggleFav = { onToggleFavorite(ch) },
                         onToggleLock = { onToggleStreamLock(ch) }
                     )
@@ -478,6 +517,7 @@ private fun LiveChannelRow(
     isLockedForDisplay: Boolean,
     onClick: () -> Unit,
     onOpenEnginePicker: () -> Unit,
+    onOpenCatchUp: (() -> Unit)? = null,
     onToggleFav: () -> Unit,
     onToggleLock: () -> Unit
 ) {
@@ -554,6 +594,19 @@ private fun LiveChannelRow(
                         text = "Live Stream • Tap to tune",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
+                    )
+                }
+            }
+            if (onOpenCatchUp != null) {
+                IconButton(
+                    onClick = onOpenCatchUp,
+                    modifier = Modifier.minimumInteractiveComponentSize().testTag("live_catchup_${channel.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.History,
+                        contentDescription = "Open Catch-Up Guide",
+                        tint = UltravioletPulse,
+                        modifier = Modifier.size(19.dp)
                     )
                 }
             }

@@ -35,6 +35,10 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,14 +82,30 @@ fun EpgGuideScreen(
     onAdjustOffset: (Int) -> Unit,
     onTuneLive: (StreamItemEntity) -> Unit,
     onPlayCatchUp: (StreamItemEntity, EpgProgramEntity) -> Unit,
+    onOpenCatchUpGuide: (StreamItemEntity?) -> Unit,
     onToggleReminder: (EpgProgramEntity) -> Unit
 ) {
     val nowMs = System.currentTimeMillis()
-    val windowStartMs = remember(nowMs) { ((nowMs - 2 * 3600_000L) / 1_800_000L) * 1_800_000L }
-    val totalHours = 10
+    var dayOffset by remember { mutableIntStateOf(0) }
+    var catchUpOnly by remember { mutableStateOf(false) }
+
+    val visibleChannels = remember(channels, catchUpOnly) {
+        if (catchUpOnly) channels.filter { it.supportsCatchUp } else channels
+    }
+
+    val windowStartMs = remember(nowMs, dayOffset) {
+        if (dayOffset == 0) {
+            ((nowMs - 4 * 3600_000L) / 1_800_000L) * 1_800_000L
+        } else {
+            NovaFormatters.addLocalDays(NovaFormatters.startOfLocalDayMs(nowMs), dayOffset)
+        }
+    }
+    val totalHours = if (dayOffset == 0) 14 else 24
     val dpPerMinute = 3.2f
     val totalGridWidthDp = (totalHours * 60 * dpPerMinute).dp
-    val horizontalScroll = rememberScrollState(initial = ((nowMs - windowStartMs) / 60_000f * dpPerMinute).toInt().coerceAtLeast(0))
+    val horizontalScroll = rememberScrollState(
+        initial = if (dayOffset == 0) ((nowMs - windowStartMs) / 60_000f * dpPerMinute).toInt().coerceAtLeast(0) else 0
+    )
 
     var selectedCell by remember { mutableStateOf<Pair<StreamItemEntity, EpgProgramEntity>?>(null) }
 
@@ -105,8 +126,43 @@ fun EpgGuideScreen(
                 Text("2D TV Guide (EPG)", style = MaterialTheme.typography.headlineSmall)
                 Text("Offset: ${if (epgOffsetMinutes >= 0) "+$epgOffsetMinutes" else "$epgOffsetMinutes"} min", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
             }
+            OutlinedButton(
+                onClick = { onOpenCatchUpGuide(null) },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.minimumInteractiveComponentSize().testTag("epg_open_catchup_guide")
+            ) {
+                Icon(Icons.Default.History, contentDescription = null, tint = UltravioletPulse, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Catch-Up Guide", style = MaterialTheme.typography.labelMedium, color = UltravioletPulse)
+            }
             TextButton(onClick = { onAdjustOffset(-60) }) { Text("-1h") }
             TextButton(onClick = { onAdjustOffset(60) }) { Text("+1h") }
+        }
+
+        // Day & Catch-Up Filter Strip
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                FilterChip(
+                    selected = catchUpOnly,
+                    onClick = { catchUpOnly = !catchUpOnly },
+                    label = { Text("Catch-Up Channels") },
+                    leadingIcon = { Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(15.dp)) },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = UltravioletPulse.copy(alpha = 0.25f))
+                )
+            }
+            items(listOf(-3, -2, -1, 0, 1), key = { it }) { d ->
+                val dayMs = NovaFormatters.addLocalDays(NovaFormatters.startOfLocalDayMs(nowMs), d)
+                val label = if (d == 0) "Today (Live)" else "${NovaFormatters.formatDayTabTitle(dayMs, nowMs)} (${NovaFormatters.formatDayTabSubtitle(dayMs)})"
+                FilterChip(
+                    selected = dayOffset == d,
+                    onClick = { dayOffset = d },
+                    label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = ElectricCyan.copy(alpha = 0.22f))
+                )
+            }
         }
 
         // Time Header Row
@@ -150,14 +206,16 @@ fun EpgGuideScreen(
             }
         }
 
-        if (channels.isEmpty()) {
+        if (visibleChannels.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No live channels available for guide.", color = TextSecondary)
+                Text("No live channels match this guide filter.", color = TextSecondary)
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(channels, key = { it.id }) { ch ->
-                    val programs = epgByChannel[ch.epgChannelId].orEmpty()
+                items(visibleChannels, key = { it.id }) { ch ->
+                    val programs = epgByChannel[ch.epgChannelId]
+                        ?: epgByChannel[ch.effectiveEpgKey]
+                        ?: emptyList()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -170,7 +228,13 @@ fun EpgGuideScreen(
                                 .width(136.dp)
                                 .fillMaxHeight()
                                 .background(SlateContainer)
-                                .clickable { onTuneLive(ch) }
+                                .clickable {
+                                    if (ch.supportsCatchUp && dayOffset < 0) {
+                                        onOpenCatchUpGuide(ch)
+                                    } else {
+                                        onTuneLive(ch)
+                                    }
+                                }
                                 .padding(horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -178,8 +242,12 @@ fun EpgGuideScreen(
                             Spacer(Modifier.width(8.dp))
                             Column {
                                 Text(ch.title, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                if (ch.catchupDays > 0) {
-                                    Text("Catch-Up", style = MaterialTheme.typography.labelSmall, color = UltravioletPulse)
+                                if (ch.supportsCatchUp) {
+                                    Text(
+                                        text = if (ch.catchupDays > 0) "${ch.catchupDays}d Catch-Up" else "Catch-Up",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = UltravioletPulse
+                                    )
                                 }
                             }
                         }
@@ -353,8 +421,20 @@ fun EpgGuideScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { selectedCell = null }) {
-                    Text("Close")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (hasCatchUp) {
+                        TextButton(
+                            onClick = {
+                                selectedCell = null
+                                onOpenCatchUpGuide(channel)
+                            }
+                        ) {
+                            Text("Channel Archive", color = UltravioletPulse)
+                        }
+                    }
+                    TextButton(onClick = { selectedCell = null }) {
+                        Text("Close")
+                    }
                 }
             }
         )

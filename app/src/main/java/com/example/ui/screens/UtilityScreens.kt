@@ -1,16 +1,9 @@
 package com.example.ui.screens
 
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,29 +23,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Backup
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.NetworkCheck
-import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -61,19 +42,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.data.local.AspectRatioMode
-import com.example.data.local.BufferPreset
-import com.example.data.local.CategoryEntity
-import com.example.data.local.MpvHardwareMode
-import com.example.data.local.PlaybackEngine
 import com.example.data.local.StreamItemEntity
-import com.example.data.local.UserPreferences
-import com.example.data.local.VlcHardwareMode
 import com.example.data.network.DiagnosticReport
 import com.example.ui.components.ChannelLogoBadge
 import com.example.ui.components.NovaFormatters
@@ -84,8 +56,6 @@ import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.EmeraldSignal
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateContainer
-import com.example.ui.theme.SlateContainerHigh
-import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.OmniSearchResult
 
@@ -186,302 +156,6 @@ fun SearchScreen(
                 }
             }
         }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun SettingsScreen(
-    preferences: UserPreferences,
-    categories: List<CategoryEntity>,
-    onBack: () -> Unit,
-    onSetPin: (String) -> Unit,
-    onClearPin: () -> Unit,
-    onSetDefaultEngine: (PlaybackEngine) -> Unit,
-    onSetVlcHwMode: (VlcHardwareMode) -> Unit,
-    onSetMpvHwMode: (MpvHardwareMode) -> Unit,
-    onSetAutoFallbackEngine: (Boolean) -> Unit,
-    onSetBufferPreset: (BufferPreset) -> Unit,
-    onSetDefaultAspect: (AspectRatioMode) -> Unit,
-    onSetAutoPip: (Boolean) -> Unit,
-    onSetAutoReconnect: (Boolean) -> Unit,
-    onToggleCatPinned: (Long, Boolean) -> Unit,
-    onToggleCatHidden: (Long, Boolean) -> Unit,
-    onToggleCatLocked: (Long, Boolean) -> Unit,
-    onExportBackup: (Uri) -> Unit,
-    onImportBackup: (Uri) -> Unit
-) {
-    var showSetPinDialog by remember { mutableStateOf(false) }
-    var newPin by remember { mutableStateOf("") }
-
-    val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
-    ) { uri -> if (uri != null) onExportBackup(uri) }
-
-    val importLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri -> if (uri != null) onImportBackup(uri) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ObsidianBg)
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack, modifier = Modifier.minimumInteractiveComponentSize().testTag("settings_back")) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-            }
-            Text("Settings & Parental Control", style = MaterialTheme.typography.headlineSmall)
-        }
-
-        LazyColumn(
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            item {
-                NovaGlassCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Parental Control PIN", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            if (preferences.hasPinConfigured) "PIN active. Locked folders and channels require verification." else "No PIN configured yet.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
-                                onClick = {
-                                    newPin = ""
-                                    showSetPinDialog = true
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
-                                modifier = Modifier.testTag("settings_set_pin")
-                            ) {
-                                Text(if (preferences.hasPinConfigured) "Change PIN" else "Set 4-Digit PIN")
-                            }
-                            if (preferences.hasPinConfigured) {
-                                OutlinedButton(onClick = onClearPin) {
-                                    Text("Remove PIN", color = BroadcastCrimson)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            item {
-                NovaGlassCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Stream Buffer & Playback Engine", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "Default Playback Engine (ExoPlayer, LibVLC, libmpv & External Apps)",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = TextSecondary
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            PlaybackEngine.selectableGlobalEngines.forEach { engine ->
-                                FilterChip(
-                                    selected = preferences.defaultEngine == engine,
-                                    onClick = { onSetDefaultEngine(engine) },
-                                    label = { Text(engine.label, style = MaterialTheme.typography.labelSmall) },
-                                    modifier = Modifier.testTag("settings_engine_${engine.name.lowercase()}")
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            "libmpv Hardware Decoding (hwdec)",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = EmeraldSignal
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            MpvHardwareMode.entries.forEach { hw ->
-                                FilterChip(
-                                    selected = preferences.mpvHardwareMode == hw,
-                                    onClick = { onSetMpvHwMode(hw) },
-                                    label = { Text(hw.label, style = MaterialTheme.typography.labelSmall) },
-                                    modifier = Modifier.testTag("settings_mpv_hw_${hw.name.lowercase()}")
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            "LibVLC Hardware Decoding",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = CinemaGold
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            VlcHardwareMode.entries.forEach { hw ->
-                                FilterChip(
-                                    selected = preferences.vlcHardwareMode == hw,
-                                    onClick = { onSetVlcHwMode(hw) },
-                                    label = { Text(hw.label, style = MaterialTheme.typography.labelSmall) },
-                                    modifier = Modifier.testTag("settings_vlc_hw_${hw.name.lowercase()}")
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(10.dp))
-                        Text("Network Buffer Preset", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            BufferPreset.entries.forEach { preset ->
-                                FilterChip(
-                                    selected = preferences.bufferPreset == preset,
-                                    onClick = { onSetBufferPreset(preset) },
-                                    label = { Text(preset.label, style = MaterialTheme.typography.labelSmall) }
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text("Default Aspect Ratio", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AspectRatioMode.entries.forEach { mode ->
-                                FilterChip(
-                                    selected = preferences.defaultAspectRatio == mode,
-                                    onClick = { onSetDefaultAspect(mode) },
-                                    label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
-                                )
-                            }
-                        }
-                        SettingSwitchRow(
-                            "Auto-Fallback Engine on Stream Error (Exo ↔ libmpv ↔ LibVLC)",
-                            preferences.autoFallbackEngine,
-                            onSetAutoFallbackEngine
-                        )
-                        SettingSwitchRow("Auto Picture-in-Picture on Home", preferences.autoPipOnBackground, onSetAutoPip)
-                        SettingSwitchRow("Auto-Reconnect Dropped Live Streams", preferences.autoReconnectLive, onSetAutoReconnect)
-                    }
-                }
-            }
-
-            item {
-                NovaGlassCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Portable Local Backup (.novabackup)", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
-                        Spacer(Modifier.height(4.dp))
-                        Text("Export or restore playlists, favorites, category locks, and watch progress offline.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
-                                onClick = { exportLauncher.launch("novastream_backup.novabackup") },
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
-                                modifier = Modifier.weight(1f).testTag("export_backup_button")
-                            ) {
-                                Icon(Icons.Default.Backup, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Export")
-                            }
-                            OutlinedButton(
-                                onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) },
-                                modifier = Modifier.weight(1f).testTag("import_backup_button")
-                            ) {
-                                Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Import")
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (categories.isNotEmpty()) {
-                item {
-                    Text("Category Visibility, Pin & Lock Studio", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
-                }
-                items(categories, key = { it.id }) { cat ->
-                    NovaGlassCard(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(cat.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(cat.mediaType.name, style = MaterialTheme.typography.labelSmall, color = TextMuted)
-                            }
-                            IconButton(onClick = { onToggleCatPinned(cat.id, !cat.isPinned) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                                Icon(Icons.Default.PushPin, contentDescription = "Pin category", tint = if (cat.isPinned) ElectricCyan else TextMuted)
-                            }
-                            IconButton(onClick = { onToggleCatHidden(cat.id, !cat.isHidden) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                                Icon(if (cat.isHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = "Hide category", tint = if (cat.isHidden) BroadcastCrimson else TextSecondary)
-                            }
-                            IconButton(onClick = { onToggleCatLocked(cat.id, !cat.isLocked) }, modifier = Modifier.minimumInteractiveComponentSize()) {
-                                Icon(if (cat.isLocked) Icons.Default.Lock else Icons.Default.LockOpen, contentDescription = "Lock category", tint = if (cat.isLocked) CinemaGold else TextMuted)
-                            }
-                        }
-                    }
-                }
-            }
-            item { Spacer(Modifier.height(80.dp)) }
-        }
-    }
-
-    if (showSetPinDialog) {
-        AlertDialog(
-            onDismissRequest = { showSetPinDialog = false },
-            containerColor = SlateContainerHigh,
-            title = { Text("Set 4-Digit Parental PIN") },
-            text = {
-                OutlinedTextField(
-                    value = newPin,
-                    onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) newPin = it },
-                    label = { Text("4-Digit PIN") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("settings_pin_input")
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newPin.length == 4) {
-                            onSetPin(newPin)
-                            showSetPinDialog = false
-                        }
-                    },
-                    enabled = newPin.length == 4
-                ) {
-                    Text("Save PIN")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSetPinDialog = false }) { Text("Cancel") }
-            }
-        )
-    }
-}
-
-@Composable
-private fun SettingSwitchRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

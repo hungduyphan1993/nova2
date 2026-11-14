@@ -812,14 +812,62 @@ fun SyncBanner(
 }
 
 object NovaFormatters {
-    private val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
-    private val dateFmt = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+    @Volatile
+    var use24HourClock: Boolean = true
 
-    fun formatClock(epochMs: Long): String = timeFmt.format(Date(epochMs))
+    private val time24Fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+    private val time12Fmt = SimpleDateFormat("h:mm a", Locale.getDefault())
+    private val dateFmt = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+    private val shortDayOfWeekFmt = SimpleDateFormat("EEE", Locale.getDefault())
+    private val shortMonthDayFmt = SimpleDateFormat("MMM d", Locale.getDefault())
+    private val fullDayHeaderFmt = SimpleDateFormat("EEEE, MMM d", Locale.getDefault())
+
+    fun formatClock(epochMs: Long): String = synchronized(this) {
+        val fmt = if (use24HourClock) time24Fmt else time12Fmt
+        fmt.format(Date(epochMs))
+    }
 
     fun formatDateEpochSec(epochSec: Long?): String {
         if (epochSec == null || epochSec <= 0L) return "Unlimited"
         return dateFmt.format(Date(epochSec * 1000L))
+    }
+
+    fun startOfLocalDayMs(epochMs: Long): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = epochMs
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
+    }
+
+    fun addLocalDays(dayStartMs: Long, deltaDays: Int): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = dayStartMs
+        cal.add(java.util.Calendar.DAY_OF_YEAR, deltaDays)
+        return cal.timeInMillis
+    }
+
+    fun formatDayTabTitle(dayStartMs: Long, nowMs: Long): String {
+        val todayStart = startOfLocalDayMs(nowMs)
+        val yesterdayStart = addLocalDays(todayStart, -1)
+        val tomorrowStart = addLocalDays(todayStart, 1)
+        return when (dayStartMs) {
+            todayStart -> "Today"
+            yesterdayStart -> "Yesterday"
+            tomorrowStart -> "Tomorrow"
+            else -> shortDayOfWeekFmt.format(Date(dayStartMs))
+        }
+    }
+
+    fun formatDayTabSubtitle(dayStartMs: Long): String = shortMonthDayFmt.format(Date(dayStartMs))
+
+    fun formatFullDayHeader(dayStartMs: Long): String = fullDayHeaderFmt.format(Date(dayStartMs))
+
+    fun formatMinutesSpan(startMs: Long, endMs: Long): String {
+        val mins = ((endMs - startMs) / 60_000L).coerceAtLeast(1L)
+        return "$mins min"
     }
 
     fun formatDurationMs(ms: Long): String {

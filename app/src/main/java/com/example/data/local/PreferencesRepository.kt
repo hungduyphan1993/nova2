@@ -139,6 +139,60 @@ enum class MpvHardwareMode(val label: String, val mpvValue: String, val subtitle
 }
 
 @Serializable
+enum class SubtitleSizePreset(val label: String, val scaleFactor: Float) {
+    SMALL("Small (85%)", 0.85f),
+    NORMAL("Standard (100%)", 1.0f),
+    LARGE("Large (125%)", 1.25f),
+    EXTRA_LARGE("Cinema XL (150%)", 1.5f)
+}
+
+@Serializable
+enum class StartupBehavior(val label: String, val subtitle: String) {
+    DASHBOARD("Home Dashboard", "Open NovaStream Control Deck at launch"),
+    LIVE_TV("Live TV Guide", "Jump directly to the Live TV channel list"),
+    RESUME_LAST_LIVE("Auto-Tune Last Channel", "Immediately start the last watched Live TV channel")
+}
+
+data class LanguageOption(val code: String, val label: String)
+
+object NovaLanguageOptions {
+    val audioLanguages = listOf(
+        LanguageOption("", "Auto (Stream Default)"),
+        LanguageOption("en", "English"),
+        LanguageOption("es", "Spanish"),
+        LanguageOption("fr", "French"),
+        LanguageOption("de", "German"),
+        LanguageOption("pt", "Portuguese"),
+        LanguageOption("ar", "Arabic"),
+        LanguageOption("vi", "Vietnamese"),
+        LanguageOption("ja", "Japanese"),
+        LanguageOption("ko", "Korean"),
+        LanguageOption("zh", "Chinese")
+    )
+
+    val subtitleLanguages = listOf(
+        LanguageOption("", "Auto"),
+        LanguageOption("off", "Off by Default"),
+        LanguageOption("en", "English"),
+        LanguageOption("es", "Spanish"),
+        LanguageOption("fr", "French"),
+        LanguageOption("de", "German"),
+        LanguageOption("pt", "Portuguese"),
+        LanguageOption("ar", "Arabic"),
+        LanguageOption("vi", "Vietnamese"),
+        LanguageOption("ja", "Japanese"),
+        LanguageOption("ko", "Korean"),
+        LanguageOption("zh", "Chinese")
+    )
+
+    fun displayLabel(code: String, isSubtitle: Boolean = false): String {
+        val list = if (isSubtitle) subtitleLanguages else audioLanguages
+        return list.firstOrNull { it.code.equals(code, ignoreCase = true) }?.label
+            ?: code.uppercase().ifBlank { "Auto" }
+    }
+}
+
+@Serializable
 data class UserPreferences(
     val activeProfileId: Long = -1L,
     val hasPinConfigured: Boolean = false,
@@ -150,7 +204,15 @@ data class UserPreferences(
     val defaultEngine: PlaybackEngine = PlaybackEngine.EXOPLAYER,
     val vlcHardwareMode: VlcHardwareMode = VlcHardwareMode.AUTO,
     val mpvHardwareMode: MpvHardwareMode = MpvHardwareMode.AUTO_SAFE,
-    val autoFallbackEngine: Boolean = true
+    val autoFallbackEngine: Boolean = true,
+    val subtitleSize: SubtitleSizePreset = SubtitleSizePreset.NORMAL,
+    val preferredAudioLanguage: String = "",
+    val preferredSubtitleLanguage: String = "",
+    val osdTimeoutSec: Int = 5,
+    val use24HourClock: Boolean = true,
+    val startupBehavior: StartupBehavior = StartupBehavior.DASHBOARD,
+    val lastLiveStreamId: Long = -1L,
+    val autoLockAdultCategories: Boolean = true
 )
 
 class PreferencesRepository(private val context: Context) {
@@ -167,6 +229,14 @@ class PreferencesRepository(private val context: Context) {
         val VLC_HW_MODE = stringPreferencesKey("vlc_hw_mode")
         val MPV_HW_MODE = stringPreferencesKey("mpv_hw_mode")
         val AUTO_FALLBACK_ENGINE = booleanPreferencesKey("auto_fallback_engine")
+        val SUBTITLE_SIZE = stringPreferencesKey("subtitle_size")
+        val PREFERRED_AUDIO_LANG = stringPreferencesKey("preferred_audio_lang")
+        val PREFERRED_SUB_LANG = stringPreferencesKey("preferred_sub_lang")
+        val OSD_TIMEOUT_SEC = androidx.datastore.preferences.core.intPreferencesKey("osd_timeout_sec")
+        val USE_24H_CLOCK = booleanPreferencesKey("use_24h_clock")
+        val STARTUP_BEHAVIOR = stringPreferencesKey("startup_behavior")
+        val LAST_LIVE_STREAM_ID = longPreferencesKey("last_live_stream_id")
+        val AUTO_LOCK_ADULT = booleanPreferencesKey("auto_lock_adult_categories")
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.dataStore.data.map { prefs ->
@@ -198,7 +268,19 @@ class PreferencesRepository(private val context: Context) {
             mpvHardwareMode = runCatching {
                 MpvHardwareMode.valueOf(prefs[Keys.MPV_HW_MODE] ?: MpvHardwareMode.AUTO_SAFE.name)
             }.getOrDefault(MpvHardwareMode.AUTO_SAFE),
-            autoFallbackEngine = prefs[Keys.AUTO_FALLBACK_ENGINE] ?: true
+            autoFallbackEngine = prefs[Keys.AUTO_FALLBACK_ENGINE] ?: true,
+            subtitleSize = runCatching {
+                SubtitleSizePreset.valueOf(prefs[Keys.SUBTITLE_SIZE] ?: SubtitleSizePreset.NORMAL.name)
+            }.getOrDefault(SubtitleSizePreset.NORMAL),
+            preferredAudioLanguage = prefs[Keys.PREFERRED_AUDIO_LANG] ?: "",
+            preferredSubtitleLanguage = prefs[Keys.PREFERRED_SUB_LANG] ?: "",
+            osdTimeoutSec = prefs[Keys.OSD_TIMEOUT_SEC] ?: 5,
+            use24HourClock = prefs[Keys.USE_24H_CLOCK] ?: true,
+            startupBehavior = runCatching {
+                StartupBehavior.valueOf(prefs[Keys.STARTUP_BEHAVIOR] ?: StartupBehavior.DASHBOARD.name)
+            }.getOrDefault(StartupBehavior.DASHBOARD),
+            lastLiveStreamId = prefs[Keys.LAST_LIVE_STREAM_ID] ?: -1L,
+            autoLockAdultCategories = prefs[Keys.AUTO_LOCK_ADULT] ?: true
         )
     }
 
@@ -247,6 +329,38 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setAutoReconnect(enabled: Boolean) {
         context.dataStore.edit { it[Keys.AUTO_RECONNECT] = enabled }
+    }
+
+    suspend fun setSubtitleSize(size: SubtitleSizePreset) {
+        context.dataStore.edit { it[Keys.SUBTITLE_SIZE] = size.name }
+    }
+
+    suspend fun setPreferredAudioLanguage(langCode: String) {
+        context.dataStore.edit { it[Keys.PREFERRED_AUDIO_LANG] = langCode.trim().lowercase() }
+    }
+
+    suspend fun setPreferredSubtitleLanguage(langCode: String) {
+        context.dataStore.edit { it[Keys.PREFERRED_SUB_LANG] = langCode.trim().lowercase() }
+    }
+
+    suspend fun setOsdTimeoutSec(seconds: Int) {
+        context.dataStore.edit { it[Keys.OSD_TIMEOUT_SEC] = seconds.coerceIn(0, 30) }
+    }
+
+    suspend fun setUse24HourClock(use24Hour: Boolean) {
+        context.dataStore.edit { it[Keys.USE_24H_CLOCK] = use24Hour }
+    }
+
+    suspend fun setStartupBehavior(behavior: StartupBehavior) {
+        context.dataStore.edit { it[Keys.STARTUP_BEHAVIOR] = behavior.name }
+    }
+
+    suspend fun setLastLiveStreamId(streamId: Long) {
+        context.dataStore.edit { it[Keys.LAST_LIVE_STREAM_ID] = streamId }
+    }
+
+    suspend fun setAutoLockAdultCategories(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AUTO_LOCK_ADULT] = enabled }
     }
 
     suspend fun setParentalPin(pin: String) {

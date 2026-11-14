@@ -60,6 +60,12 @@ interface CategoryDao {
     @Query("UPDATE categories SET isLocked = :locked WHERE id = :id")
     suspend fun setLocked(id: Long, locked: Boolean)
 
+    @Query("UPDATE categories SET isLocked = :locked WHERE id IN (:ids)")
+    suspend fun setLockedForIds(ids: List<Long>, locked: Boolean)
+
+    @Query("UPDATE categories SET isHidden = :hidden WHERE id IN (:ids)")
+    suspend fun setHiddenForIds(ids: List<Long>, hidden: Boolean)
+
     @Query("DELETE FROM categories WHERE profileId = :profileId")
     suspend fun deleteByProfile(profileId: Long)
 }
@@ -144,6 +150,15 @@ interface StreamItemDao {
         rating: String
     )
 
+    @Query("SELECT COUNT(*) FROM stream_items WHERE profileId = :profileId AND isFavorite = 1")
+    fun observeFavoriteCount(profileId: Long): Flow<Int>
+
+    @Query("UPDATE stream_items SET isFavorite = 0 WHERE profileId = :profileId")
+    suspend fun clearFavoritesForProfile(profileId: Long)
+
+    @Query("UPDATE stream_items SET preferredEngine = '' WHERE profileId = :profileId")
+    suspend fun clearEngineOverridesForProfile(profileId: Long)
+
     @Query("DELETE FROM stream_items WHERE profileId = :profileId")
     suspend fun deleteByProfile(profileId: Long)
 }
@@ -208,6 +223,24 @@ interface EpgProgramDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(programs: List<EpgProgramEntity>)
 
+    @Query(
+        """
+        DELETE FROM epg_programs 
+        WHERE profileId = :profileId AND epgChannelId = :channelId 
+        AND startEpochMs >= :minStartMs AND endEpochMs <= :maxEndMs 
+        AND hasReminder = 0
+        """
+    )
+    suspend fun deleteChannelRangeWithoutReminders(
+        profileId: Long,
+        channelId: String,
+        minStartMs: Long,
+        maxEndMs: Long
+    )
+
+    @Query("SELECT COUNT(*) FROM epg_programs WHERE profileId = :profileId")
+    fun observeProgramCount(profileId: Long): Flow<Int>
+
     @Query("DELETE FROM epg_programs WHERE profileId = :profileId")
     suspend fun deleteByProfile(profileId: Long)
 }
@@ -223,6 +256,9 @@ interface WatchProgressDao {
         """
     )
     fun observeRecent(profileId: Long): Flow<List<WatchProgressEntity>>
+
+    @Query("SELECT COUNT(*) FROM watch_progress WHERE profileId = :profileId")
+    fun observeHistoryCount(profileId: Long): Flow<Int>
 
     @Query("SELECT * FROM watch_progress WHERE profileId = :profileId")
     suspend fun getAllForProfile(profileId: Long): List<WatchProgressEntity>

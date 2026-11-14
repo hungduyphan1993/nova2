@@ -102,7 +102,7 @@ class CatalogViewModel(
         .flatMapLatest { id ->
             if (id > 0) {
                 val now = System.currentTimeMillis()
-                repository.observeEpgWindow(id, now - 12 * 3600_000L, now + 18 * 3600_000L)
+                repository.observeEpgWindow(id, now - 7L * 24L * 3600_000L, now + 36L * 3600_000L)
             } else {
                 flowOf(emptyList())
             }
@@ -145,9 +145,27 @@ class CatalogViewModel(
         }
     }
 
+    private val _isSyncingCatchUp = MutableStateFlow(false)
+    val isSyncingCatchUp: StateFlow<Boolean> = _isSyncingCatchUp.asStateFlow()
+
     fun loadSeriesEpisodes(profileId: Long, seriesItem: StreamItemEntity) {
         viewModelScope.launch {
             repository.ensureSeriesEpisodesLoaded(profileId, seriesItem)
+        }
+    }
+
+    fun loadChannelCatchUpArchive(
+        profileId: Long,
+        stream: StreamItemEntity,
+        forceRefresh: Boolean = false
+    ) {
+        if (profileId <= 0L) return
+        viewModelScope.launch {
+            _isSyncingCatchUp.value = true
+            runCatching {
+                repository.ensureChannelCatchUpLoaded(profileId, stream, forceRefresh)
+            }
+            _isSyncingCatchUp.value = false
         }
     }
 
