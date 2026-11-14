@@ -9,6 +9,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -67,8 +69,11 @@ import androidx.compose.ui.unit.dp
 import com.example.data.local.AspectRatioMode
 import com.example.data.local.BufferPreset
 import com.example.data.local.CategoryEntity
+import com.example.data.local.MpvHardwareMode
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.StreamItemEntity
 import com.example.data.local.UserPreferences
+import com.example.data.local.VlcHardwareMode
 import com.example.data.network.DiagnosticReport
 import com.example.ui.components.ChannelLogoBadge
 import com.example.ui.components.NovaFormatters
@@ -184,6 +189,7 @@ fun SearchScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     preferences: UserPreferences,
@@ -191,10 +197,13 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onSetPin: (String) -> Unit,
     onClearPin: () -> Unit,
+    onSetDefaultEngine: (PlaybackEngine) -> Unit,
+    onSetVlcHwMode: (VlcHardwareMode) -> Unit,
+    onSetMpvHwMode: (MpvHardwareMode) -> Unit,
+    onSetAutoFallbackEngine: (Boolean) -> Unit,
     onSetBufferPreset: (BufferPreset) -> Unit,
     onSetDefaultAspect: (AspectRatioMode) -> Unit,
     onSetAutoPip: (Boolean) -> Unit,
-    onSetPreferExternal: (Boolean) -> Unit,
     onSetAutoReconnect: (Boolean) -> Unit,
     onToggleCatPinned: (Long, Boolean) -> Unit,
     onToggleCatHidden: (Long, Boolean) -> Unit,
@@ -270,8 +279,73 @@ fun SettingsScreen(
                 NovaGlassCard(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Stream Buffer & Playback Engine", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Default Playback Engine (ExoPlayer, LibVLC, libmpv & External Apps)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextSecondary
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            PlaybackEngine.selectableGlobalEngines.forEach { engine ->
+                                FilterChip(
+                                    selected = preferences.defaultEngine == engine,
+                                    onClick = { onSetDefaultEngine(engine) },
+                                    label = { Text(engine.label, style = MaterialTheme.typography.labelSmall) },
+                                    modifier = Modifier.testTag("settings_engine_${engine.name.lowercase()}")
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "libmpv Hardware Decoding (hwdec)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = EmeraldSignal
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            MpvHardwareMode.entries.forEach { hw ->
+                                FilterChip(
+                                    selected = preferences.mpvHardwareMode == hw,
+                                    onClick = { onSetMpvHwMode(hw) },
+                                    label = { Text(hw.label, style = MaterialTheme.typography.labelSmall) },
+                                    modifier = Modifier.testTag("settings_mpv_hw_${hw.name.lowercase()}")
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "LibVLC Hardware Decoding",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CinemaGold
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            VlcHardwareMode.entries.forEach { hw ->
+                                FilterChip(
+                                    selected = preferences.vlcHardwareMode == hw,
+                                    onClick = { onSetVlcHwMode(hw) },
+                                    label = { Text(hw.label, style = MaterialTheme.typography.labelSmall) },
+                                    modifier = Modifier.testTag("settings_vlc_hw_${hw.name.lowercase()}")
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+                        Text("Network Buffer Preset", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             BufferPreset.entries.forEach { preset ->
                                 FilterChip(
                                     selected = preferences.bufferPreset == preset,
@@ -282,7 +356,7 @@ fun SettingsScreen(
                         }
                         Spacer(Modifier.height(8.dp))
                         Text("Default Aspect Ratio", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             AspectRatioMode.entries.forEach { mode ->
                                 FilterChip(
                                     selected = preferences.defaultAspectRatio == mode,
@@ -291,9 +365,13 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        SettingSwitchRow(
+                            "Auto-Fallback Engine on Stream Error (Exo ↔ libmpv ↔ LibVLC)",
+                            preferences.autoFallbackEngine,
+                            onSetAutoFallbackEngine
+                        )
                         SettingSwitchRow("Auto Picture-in-Picture on Home", preferences.autoPipOnBackground, onSetAutoPip)
                         SettingSwitchRow("Auto-Reconnect Dropped Live Streams", preferences.autoReconnectLive, onSetAutoReconnect)
-                        SettingSwitchRow("Prefer External Video Player", preferences.preferExternalPlayer, onSetPreferExternal)
                     }
                 }
             }

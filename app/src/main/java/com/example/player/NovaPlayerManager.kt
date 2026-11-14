@@ -55,6 +55,9 @@ class NovaPlayerManager(private val context: Context) {
     var primaryPlayer: ExoPlayer? = null
         private set
 
+    val vlcController: VlcPlayerController = VlcPlayerController(context)
+    val mpvController: MpvPlayerController = MpvPlayerController(context)
+
     private val multiScreenPlayers = arrayOfNulls<ExoPlayer>(4)
 
     fun buildOrGetPrimaryPlayer(
@@ -86,7 +89,9 @@ class NovaPlayerManager(private val context: Context) {
         onTracksChanged: () -> Unit = {}
     ): ExoPlayer {
         val headers = parseHeaders(stream.httpHeadersJson, profileUserAgent)
-        // Recreate if custom headers or DRM changed, otherwise reuse for fast zapping
+        // Ensure built-in LibVLC and libmpv are stopped when preparing ExoPlayer
+        vlcController.release()
+        mpvController.stopStream()
         primaryPlayer?.release()
         val player = createExoPlayer(
             bufferPreset = bufferPreset,
@@ -200,9 +205,26 @@ class NovaPlayerManager(private val context: Context) {
         }
     }
 
+    fun releaseExoPrimaryOnly() {
+        primaryPlayer?.release()
+        primaryPlayer = null
+    }
+
+    fun prepareForLibVlc() {
+        releaseExoPrimaryOnly()
+        mpvController.stopStream()
+    }
+
+    fun prepareForLibMpv() {
+        releaseExoPrimaryOnly()
+        vlcController.release()
+    }
+
     fun releasePrimary() {
         primaryPlayer?.release()
         primaryPlayer = null
+        vlcController.release()
+        mpvController.release()
     }
 
     fun getTrackChoices(player: Player?, trackType: Int): List<TrackChoice> {

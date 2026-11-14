@@ -4,19 +4,23 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.C
-import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.data.local.AspectRatioMode
 import com.example.data.local.BufferPreset
 import com.example.data.local.EpgProgramEntity
 import com.example.data.local.MediaCategoryType
+import com.example.data.local.MpvHardwareMode
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.SeriesEpisodeEntity
 import com.example.data.local.StreamItemEntity
+import com.example.data.local.VlcHardwareMode
 import com.example.data.local.WatchProgressEntity
 import com.example.data.repository.NovaStreamRepository
+import com.example.player.MpvPlayerController
 import com.example.player.NovaPlayerManager
 import com.example.player.StreamTelemetry
 import com.example.player.TrackChoice
+import com.example.player.VlcPlayerController
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +48,16 @@ data class MultiScreenSlot(
     val player: ExoPlayer? = null
 )
 
+data class ExternalLaunchRequest(
+    val id: Long = System.nanoTime(),
+    val engine: PlaybackEngine,
+    val url: String,
+    val title: String,
+    val userAgent: String,
+    val httpHeadersJson: String,
+    val positionMs: Long
+)
+
 data class PlayerUiState(
     val mode: PlayerPresentationMode = PlayerPresentationMode.HIDDEN,
     val activeStream: StreamItemEntity? = null,
@@ -58,6 +72,9 @@ data class PlayerUiState(
     val isPlaying: Boolean = false,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
+    val activeEngine: PlaybackEngine = PlaybackEngine.EXOPLAYER,
+    val vlcHardwareMode: VlcHardwareMode = VlcHardwareMode.AUTO,
+    val mpvHardwareMode: MpvHardwareMode = MpvHardwareMode.AUTO_SAFE,
     val telemetry: StreamTelemetry = StreamTelemetry(),
     val aspectRatioMode: AspectRatioMode = AspectRatioMode.FIT,
     val audioOnlyMode: Boolean = false,
@@ -68,7 +85,9 @@ data class PlayerUiState(
     val audioTracks: List<TrackChoice> = emptyList(),
     val subtitleTracks: List<TrackChoice> = emptyList(),
     val zappingIndicator: String? = null,
-    val showInfoBanner: Boolean = false
+    val engineSwitchNotice: String? = null,
+    val showInfoBanner: Boolean = false,
+    val externalLaunchRequest: ExternalLaunchRequest? = null
 )
 
 class PlayerViewModel(
@@ -81,6 +100,12 @@ class PlayerViewModel(
 
     private val _activePlayer = MutableStateFlow<ExoPlayer?>(null)
     val activePlayer: StateFlow<ExoPlayer?> = _activePlayer.asStateFlow()
+
+    val vlcController: VlcPlayerController
+        get() = playerManager.vlcController
+
+    val mpvController: MpvPlayerController
+        get() = playerManager.mpvController
 
     private val _multiSlots = MutableStateFlow(List(4) { MultiScreenSlot(it) })
     val multiSlots: StateFlow<List<MultiScreenSlot>> = _multiSlots.asStateFlow()
@@ -97,27 +122,87 @@ class PlayerViewModel(
     private var heartbeatJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var infoBannerJob: Job? = null
+    private var engineNoticeJob: Job? = null
     private var currentProfileUserAgent = "NovaStream/1.0 (Android)"
     private var currentBufferPreset = BufferPreset.BALANCED
     private var currentAutoReconnect = true
+    private var currentDefaultEngine = PlaybackEngine.EXOPLAYER
+    private var currentVlcHardwareMode = VlcHardwareMode.AUTO
+    private var currentMpvHardwareMode = MpvHardwareMode.AUTO_SAFE
+    private var currentAutoFallbackEngine = true
+    private val attemptedBuiltInEngines = mutableSetOf<PlaybackEngine>()
 
     init {
         viewModelScope.launch {
             repository.prefs.preferencesFlow.collect { prefs ->
                 currentBufferPreset = prefs.bufferPreset
                 currentAutoReconnect = prefs.autoReconnectLive
-                if (_uiState.value.mode == PlayerPresentationMode.HIDDEN) {
-                    _uiState.update { it.copy(aspectRatioMode = prefs.defaultAspectRatio) }
+                currentDefaultEngine = prefs.defaultEngine
+                currentVlcHardwareMode = prefs.vlcHardwareMode
+                currentMpvHardwareMode = prefs.mpvHardwareMode
+                currentAutoFallbackEngine = prefs.autoFallbackEngine
+                _uiState.update { state ->
+                    if (state.mode == PlayerPresentationMode.HIDDEN) {
+                        state.copy(
+                            aspectRatioMode = prefs.defaultAspectRatio,
+                            vlcHardwareMode = prefs.vlcHardwareMode,
+                            mpvHardwareMode = prefs.mpvHardwareMode
+                        )
+                    } else {
+                        state.copy(
+                            vlcHardwareMode = prefs.vlcHardwareMode,
+                            mpvHardwareMode = prefs.mpvHardwareMode
+                        )
+                    }
                 }
             }
         }
+    }
+
+    fun consumeExternalLaunchRequest() {
+        _uiState.update { it.copy(externalLaunchRequest = null) }
+    }
+
+    private fun pulseInfoBanner() {
+        infoBannerJob?.cancel()
+        _uiState.update { it.copy(showInfoBanner = true) }
+        infoBannerJob = viewModelScope.launch {
+            delay(5000)
+            _uiState.update { it.copy(showInfoBanner = false) }
+        }
+    }
+
+    private fun pulseEngineNotice(message: String) {
+        engineNoticeJob?.cancel()
+        _uiState.update { it.copy(engineSwitchNotice = message) }
+        engineNoticeJob = viewModelScope.launch {
+            delay(3200)
+            _uiState.update { it.copy(engineSwitchNotice = null) }
+        }
+    }
+
+    private fun resolveEffectiveEngine(
+        stream: StreamItemEntity,
+        explicitEngine: PlaybackEngine?
+    ): Pair<PlaybackEngine, String?> {
+        val streamOverride = PlaybackEngine.fromStoredName(stream.preferredEngine)
+            .takeIf { it != PlaybackEngine.DEFAULT }
+        val candidate = explicitEngine?.takeIf { it != PlaybackEngine.DEFAULT }
+            ?: streamOverride
+            ?: currentDefaultEngine
+
+        if ((candidate == PlaybackEngine.LIBVLC || candidate == PlaybackEngine.LIBMPV) && stream.drmLicenseKey.isNotBlank()) {
+            return PlaybackEngine.EXOPLAYER to "DRM stream requires ExoPlayer"
+        }
+        return candidate to null
     }
 
     fun playLiveChannel(
         stream: StreamItemEntity,
         channelQueue: List<StreamItemEntity>,
         userAgent: String,
-        openFullscreen: Boolean = true
+        openFullscreen: Boolean = true,
+        explicitEngine: PlaybackEngine? = null
     ) {
         currentProfileUserAgent = userAgent
         launchPlayback(
@@ -131,25 +216,19 @@ class PlayerViewModel(
             channelQueue = channelQueue,
             episodesQueue = emptyList(),
             episodeIndex = -1,
-            mode = if (openFullscreen) PlayerPresentationMode.FULLSCREEN else PlayerPresentationMode.MINI_DOCKED
+            mode = if (openFullscreen) PlayerPresentationMode.FULLSCREEN else PlayerPresentationMode.MINI_DOCKED,
+            explicitEngine = explicitEngine,
+            allowAutoFallback = true
         )
         pulseInfoBanner()
-    }
-
-    private fun pulseInfoBanner() {
-        infoBannerJob?.cancel()
-        _uiState.update { it.copy(showInfoBanner = true) }
-        infoBannerJob = viewModelScope.launch {
-            delay(5000)
-            _uiState.update { it.copy(showInfoBanner = false) }
-        }
     }
 
     fun playCatchUpProgram(
         stream: StreamItemEntity,
         program: EpgProgramEntity,
         archiveUrl: String,
-        userAgent: String
+        userAgent: String,
+        explicitEngine: PlaybackEngine? = null
     ) {
         currentProfileUserAgent = userAgent
         launchPlayback(
@@ -163,14 +242,17 @@ class PlayerViewModel(
             channelQueue = emptyList(),
             episodesQueue = emptyList(),
             episodeIndex = -1,
-            mode = PlayerPresentationMode.FULLSCREEN
+            mode = PlayerPresentationMode.FULLSCREEN,
+            explicitEngine = explicitEngine,
+            allowAutoFallback = true
         )
     }
 
     fun playMovie(
         movie: StreamItemEntity,
         userAgent: String,
-        resumeMs: Long = 0L
+        resumeMs: Long = 0L,
+        explicitEngine: PlaybackEngine? = null
     ) {
         currentProfileUserAgent = userAgent
         launchPlayback(
@@ -184,7 +266,9 @@ class PlayerViewModel(
             channelQueue = emptyList(),
             episodesQueue = emptyList(),
             episodeIndex = -1,
-            mode = PlayerPresentationMode.FULLSCREEN
+            mode = PlayerPresentationMode.FULLSCREEN,
+            explicitEngine = explicitEngine,
+            allowAutoFallback = true
         )
     }
 
@@ -193,7 +277,8 @@ class PlayerViewModel(
         episode: SeriesEpisodeEntity,
         allEpisodes: List<SeriesEpisodeEntity>,
         userAgent: String,
-        resumeMs: Long = 0L
+        resumeMs: Long = 0L,
+        explicitEngine: PlaybackEngine? = null
     ) {
         currentProfileUserAgent = userAgent
         val epIdx = allEpisodes.indexOfFirst { it.episodeId == episode.episodeId }
@@ -213,7 +298,9 @@ class PlayerViewModel(
             channelQueue = emptyList(),
             episodesQueue = allEpisodes,
             episodeIndex = epIdx,
-            mode = PlayerPresentationMode.FULLSCREEN
+            mode = PlayerPresentationMode.FULLSCREEN,
+            explicitEngine = explicitEngine,
+            allowAutoFallback = true
         )
     }
 
@@ -228,8 +315,42 @@ class PlayerViewModel(
         channelQueue: List<StreamItemEntity>,
         episodesQueue: List<SeriesEpisodeEntity>,
         episodeIndex: Int,
-        mode: PlayerPresentationMode
+        mode: PlayerPresentationMode,
+        explicitEngine: PlaybackEngine?,
+        allowAutoFallback: Boolean
     ) {
+        val (effectiveEngine, drmNotice) = resolveEffectiveEngine(stream, explicitEngine)
+        if (drmNotice != null) {
+            pulseEngineNotice(drmNotice)
+        }
+
+        // External player handoff (MPV App, VLC App, MX Player, Just Player, Kodi, System Chooser)
+        if (!effectiveEngine.isBuiltIn) {
+            val targetUrl = (overrideUrl ?: stream.streamUrl).trim()
+            recordWatchHistory(stream, title, subtitle, startPositionMs, 0L)
+            _activePlayer.value?.pause()
+            playerManager.vlcController.pause()
+            playerManager.mpvController.pause()
+            _uiState.update {
+                it.copy(
+                    externalLaunchRequest = ExternalLaunchRequest(
+                        engine = effectiveEngine,
+                        url = targetUrl,
+                        title = title,
+                        userAgent = currentProfileUserAgent,
+                        httpHeadersJson = stream.httpHeadersJson,
+                        positionMs = startPositionMs
+                    )
+                )
+            }
+            return
+        }
+
+        if (allowAutoFallback) {
+            attemptedBuiltInEngines.clear()
+        }
+        attemptedBuiltInEngines.add(effectiveEngine)
+
         _uiState.update {
             it.copy(
                 mode = mode,
@@ -242,18 +363,48 @@ class PlayerViewModel(
                 overrideUrl = overrideUrl,
                 isLive = isLive,
                 isCatchUp = isCatchUp,
+                activeEngine = effectiveEngine,
+                vlcHardwareMode = currentVlcHardwareMode,
+                mpvHardwareMode = currentMpvHardwareMode,
                 errorMessage = null,
-                audioOnlyMode = false
+                audioOnlyMode = false,
+                videoTracks = emptyList(),
+                audioTracks = emptyList(),
+                subtitleTracks = emptyList()
             )
         }
 
-        val player = playerManager.prepareStream(
-            stream = stream,
-            overrideUrl = overrideUrl,
-            profileUserAgent = currentProfileUserAgent,
-            bufferPreset = currentBufferPreset,
-            startPositionMs = startPositionMs,
-            onError = { err ->
+        val handleEngineError: (String) -> Unit = { err ->
+            val fallbackOrder = listOf(
+                PlaybackEngine.LIBMPV,
+                PlaybackEngine.LIBVLC,
+                PlaybackEngine.EXOPLAYER
+            )
+            val nextFallbackEngine = if (currentAutoFallbackEngine && stream.drmLicenseKey.isBlank()) {
+                fallbackOrder.firstOrNull { it !in attemptedBuiltInEngines }
+            } else {
+                null
+            }
+
+            if (nextFallbackEngine != null) {
+                val resumeAt = _uiState.value.positionMs.takeIf { !isLive && it > 1500L } ?: startPositionMs
+                pulseEngineNotice("Auto-Switched to ${nextFallbackEngine.label}")
+                launchPlayback(
+                    stream = stream,
+                    overrideUrl = overrideUrl,
+                    title = title,
+                    subtitle = subtitle,
+                    isLive = isLive,
+                    isCatchUp = isCatchUp,
+                    startPositionMs = resumeAt,
+                    channelQueue = channelQueue,
+                    episodesQueue = episodesQueue,
+                    episodeIndex = episodeIndex,
+                    mode = _uiState.value.mode.takeIf { it != PlayerPresentationMode.HIDDEN } ?: mode,
+                    explicitEngine = nextFallbackEngine,
+                    allowAutoFallback = false
+                )
+            } else {
                 _uiState.update { it.copy(errorMessage = err) }
                 if (isLive && currentAutoReconnect) {
                     viewModelScope.launch {
@@ -263,17 +414,140 @@ class PlayerViewModel(
                         }
                     }
                 }
-            },
-            onTelemetryChanged = { telemetry ->
-                _uiState.update { it.copy(telemetry = telemetry) }
-            },
-            onTracksChanged = {
-                refreshTracks()
             }
-        )
-        _activePlayer.value = player
+        }
+
+        when (effectiveEngine) {
+            PlaybackEngine.LIBVLC -> {
+                playerManager.prepareForLibVlc()
+                _activePlayer.value = null
+                playerManager.vlcController.prepareStream(
+                    stream = stream,
+                    overrideUrl = overrideUrl,
+                    profileUserAgent = currentProfileUserAgent,
+                    bufferPreset = currentBufferPreset,
+                    hwMode = currentVlcHardwareMode,
+                    aspectRatioMode = _uiState.value.aspectRatioMode,
+                    startPositionMs = startPositionMs,
+                    onError = handleEngineError,
+                    onTelemetryChanged = { telemetry ->
+                        _uiState.update { it.copy(telemetry = telemetry) }
+                    },
+                    onTracksChanged = {
+                        refreshTracks()
+                    }
+                )
+            }
+            PlaybackEngine.LIBMPV -> {
+                playerManager.prepareForLibMpv()
+                _activePlayer.value = null
+                playerManager.mpvController.prepareStream(
+                    stream = stream,
+                    overrideUrl = overrideUrl,
+                    profileUserAgent = currentProfileUserAgent,
+                    bufferPreset = currentBufferPreset,
+                    hwMode = currentMpvHardwareMode,
+                    aspectRatioMode = _uiState.value.aspectRatioMode,
+                    startPositionMs = startPositionMs,
+                    onError = handleEngineError,
+                    onTelemetryChanged = { telemetry ->
+                        _uiState.update { it.copy(telemetry = telemetry) }
+                    },
+                    onTracksChanged = {
+                        refreshTracks()
+                    }
+                )
+            }
+            else -> {
+                val player = playerManager.prepareStream(
+                    stream = stream,
+                    overrideUrl = overrideUrl,
+                    profileUserAgent = currentProfileUserAgent,
+                    bufferPreset = currentBufferPreset,
+                    startPositionMs = startPositionMs,
+                    onError = handleEngineError,
+                    onTelemetryChanged = { telemetry ->
+                        _uiState.update { it.copy(telemetry = telemetry) }
+                    },
+                    onTracksChanged = {
+                        refreshTracks()
+                    }
+                )
+                _activePlayer.value = player
+            }
+        }
+
         startHeartbeat()
-        recordWatchHistory(stream, title, subtitle, 0L, 0L)
+        recordWatchHistory(stream, title, subtitle, startPositionMs, 0L)
+    }
+
+    fun switchEngine(targetEngine: PlaybackEngine, saveForStream: Boolean) {
+        val state = _uiState.value
+        val currentStream = state.activeStream ?: return
+
+        val updatedStream = if (saveForStream) {
+            val storedValue = if (targetEngine == PlaybackEngine.DEFAULT) "" else targetEngine.name
+            viewModelScope.launch {
+                repository.setStreamPreferredEngine(currentStream.id, targetEngine)
+            }
+            currentStream.copy(preferredEngine = storedValue)
+        } else {
+            currentStream
+        }
+
+        val updatedQueue = if (saveForStream && state.activePlaylistQueue.isNotEmpty()) {
+            state.activePlaylistQueue.map { if (it.id == updatedStream.id) updatedStream else it }
+        } else {
+            state.activePlaylistQueue
+        }
+
+        val effectiveTarget = if (targetEngine == PlaybackEngine.DEFAULT) {
+            currentDefaultEngine
+        } else {
+            targetEngine
+        }
+
+        val resumePos = state.positionMs.takeIf { !state.isLive && it > 1000L } ?: 0L
+
+        if (!effectiveTarget.isBuiltIn) {
+            _activePlayer.value?.pause()
+            playerManager.vlcController.pause()
+            playerManager.mpvController.pause()
+            if (saveForStream) {
+                _uiState.update { it.copy(activeStream = updatedStream, activePlaylistQueue = updatedQueue) }
+            }
+            val url = (state.overrideUrl ?: updatedStream.streamUrl).trim()
+            _uiState.update {
+                it.copy(
+                    externalLaunchRequest = ExternalLaunchRequest(
+                        engine = effectiveTarget,
+                        url = url,
+                        title = state.title,
+                        userAgent = currentProfileUserAgent,
+                        httpHeadersJson = updatedStream.httpHeadersJson,
+                        positionMs = resumePos
+                    )
+                )
+            }
+            return
+        }
+
+        pulseEngineNotice("Engine: ${effectiveTarget.label}")
+        launchPlayback(
+            stream = updatedStream,
+            overrideUrl = state.overrideUrl,
+            title = state.title,
+            subtitle = state.subtitle,
+            isLive = state.isLive,
+            isCatchUp = state.isCatchUp,
+            startPositionMs = resumePos,
+            channelQueue = updatedQueue,
+            episodesQueue = state.activeEpisodesQueue,
+            episodeIndex = state.activeEpisodeIndex,
+            mode = state.mode,
+            explicitEngine = effectiveTarget,
+            allowAutoFallback = false
+        )
     }
 
     fun retryActiveStream() {
@@ -290,7 +564,9 @@ class PlayerViewModel(
             channelQueue = state.activePlaylistQueue,
             episodesQueue = state.activeEpisodesQueue,
             episodeIndex = state.activeEpisodeIndex,
-            mode = state.mode
+            mode = state.mode,
+            explicitEngine = state.activeEngine,
+            allowAutoFallback = true
         )
     }
 
@@ -328,32 +604,65 @@ class PlayerViewModel(
     }
 
     fun togglePlayPause() {
-        val player = _activePlayer.value ?: return
-        if (player.isPlaying) player.pause() else player.play()
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> {
+                playerManager.vlcController.togglePlayPause()
+                _uiState.update { it.copy(isPlaying = playerManager.vlcController.isPlaying) }
+            }
+            PlaybackEngine.LIBMPV -> {
+                playerManager.mpvController.togglePlayPause()
+                _uiState.update { it.copy(isPlaying = playerManager.mpvController.isPlaying) }
+            }
+            else -> {
+                val player = _activePlayer.value ?: return
+                if (player.isPlaying) player.pause() else player.play()
+            }
+        }
     }
 
     fun seekBy(deltaMs: Long) {
-        val player = _activePlayer.value ?: return
-        val target = (player.currentPosition + deltaMs).coerceIn(0L, player.duration.coerceAtLeast(0L))
-        player.seekTo(target)
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> playerManager.vlcController.seekBy(deltaMs)
+            PlaybackEngine.LIBMPV -> playerManager.mpvController.seekBy(deltaMs)
+            else -> {
+                val player = _activePlayer.value ?: return
+                val target = (player.currentPosition + deltaMs).coerceIn(0L, player.duration.coerceAtLeast(0L))
+                player.seekTo(target)
+            }
+        }
     }
 
     fun seekTo(positionMs: Long) {
-        _activePlayer.value?.seekTo(positionMs.coerceAtLeast(0L))
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> playerManager.vlcController.seekTo(positionMs)
+            PlaybackEngine.LIBMPV -> playerManager.mpvController.seekTo(positionMs)
+            else -> _activePlayer.value?.seekTo(positionMs.coerceAtLeast(0L))
+        }
     }
 
     fun cycleAspectRatio() {
         val modes = AspectRatioMode.entries
         val next = modes[(modes.indexOf(_uiState.value.aspectRatioMode) + 1) % modes.size]
         _uiState.update { it.copy(aspectRatioMode = next) }
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> playerManager.vlcController.applyAspectRatio(next)
+            PlaybackEngine.LIBMPV -> playerManager.mpvController.applyAspectRatio(next)
+            else -> {}
+        }
     }
 
     fun toggleAudioOnly() {
-        val player = _activePlayer.value ?: return
         val next = !_uiState.value.audioOnlyMode
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, next)
-            .build()
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> playerManager.vlcController.setAudioOnly(next)
+            PlaybackEngine.LIBMPV -> playerManager.mpvController.setAudioOnly(next)
+            else -> {
+                val player = _activePlayer.value ?: return
+                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, next)
+                    .build()
+            }
+        }
         _uiState.update { it.copy(audioOnlyMode = next) }
     }
 
@@ -362,23 +671,53 @@ class PlayerViewModel(
     }
 
     fun selectTrack(choice: TrackChoice) {
-        playerManager.selectTrack(_activePlayer.value, choice)
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> playerManager.vlcController.selectTrack(choice)
+            PlaybackEngine.LIBMPV -> playerManager.mpvController.selectTrack(choice)
+            else -> playerManager.selectTrack(_activePlayer.value, choice)
+        }
         refreshTracks()
     }
 
     fun resetTrackAuto(trackType: Int, disable: Boolean = false) {
-        playerManager.clearTrackOverride(_activePlayer.value, trackType, disable)
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> playerManager.vlcController.clearTrackOverride(trackType, disable)
+            PlaybackEngine.LIBMPV -> playerManager.mpvController.clearTrackOverride(trackType, disable)
+            else -> playerManager.clearTrackOverride(_activePlayer.value, trackType, disable)
+        }
         refreshTracks()
     }
 
     fun refreshTracks() {
-        val player = _activePlayer.value
-        _uiState.update {
-            it.copy(
-                videoTracks = playerManager.getTrackChoices(player, C.TRACK_TYPE_VIDEO),
-                audioTracks = playerManager.getTrackChoices(player, C.TRACK_TYPE_AUDIO),
-                subtitleTracks = playerManager.getTrackChoices(player, C.TRACK_TYPE_TEXT)
-            )
+        when (_uiState.value.activeEngine) {
+            PlaybackEngine.LIBVLC -> {
+                _uiState.update {
+                    it.copy(
+                        videoTracks = playerManager.vlcController.getTrackChoices(C.TRACK_TYPE_VIDEO),
+                        audioTracks = playerManager.vlcController.getTrackChoices(C.TRACK_TYPE_AUDIO),
+                        subtitleTracks = playerManager.vlcController.getTrackChoices(C.TRACK_TYPE_TEXT)
+                    )
+                }
+            }
+            PlaybackEngine.LIBMPV -> {
+                _uiState.update {
+                    it.copy(
+                        videoTracks = playerManager.mpvController.getTrackChoices(C.TRACK_TYPE_VIDEO),
+                        audioTracks = playerManager.mpvController.getTrackChoices(C.TRACK_TYPE_AUDIO),
+                        subtitleTracks = playerManager.mpvController.getTrackChoices(C.TRACK_TYPE_TEXT)
+                    )
+                }
+            }
+            else -> {
+                val player = _activePlayer.value
+                _uiState.update {
+                    it.copy(
+                        videoTracks = playerManager.getTrackChoices(player, C.TRACK_TYPE_VIDEO),
+                        audioTracks = playerManager.getTrackChoices(player, C.TRACK_TYPE_AUDIO),
+                        subtitleTracks = playerManager.getTrackChoices(player, C.TRACK_TYPE_TEXT)
+                    )
+                }
+            }
         }
     }
 
@@ -397,6 +736,8 @@ class PlayerViewModel(
             }
             _uiState.update { it.copy(sleepTimerRemainingSec = null) }
             _activePlayer.value?.pause()
+            playerManager.vlcController.pause()
+            playerManager.mpvController.pause()
         }
     }
 
@@ -417,7 +758,13 @@ class PlayerViewModel(
         sleepTimerJob?.cancel()
         playerManager.releasePrimary()
         _activePlayer.value = null
-        _uiState.update { PlayerUiState(aspectRatioMode = it.aspectRatioMode) }
+        _uiState.update {
+            PlayerUiState(
+                aspectRatioMode = it.aspectRatioMode,
+                vlcHardwareMode = it.vlcHardwareMode,
+                mpvHardwareMode = it.mpvHardwareMode
+            )
+        }
     }
 
     // Multi-Screen Controls
@@ -473,21 +820,66 @@ class PlayerViewModel(
         heartbeatJob = viewModelScope.launch {
             var tick = 0
             while (isActive) {
-                val p = _activePlayer.value
-                if (p != null) {
-                    val pos = p.currentPosition.coerceAtLeast(0L)
-                    val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
-                    _uiState.update {
-                        it.copy(
-                            isPlaying = p.isPlaying,
-                            positionMs = pos,
-                            durationMs = dur
-                        )
+                val state = _uiState.value
+                when (state.activeEngine) {
+                    PlaybackEngine.LIBVLC -> {
+                        val vlc = playerManager.vlcController
+                        val playing = vlc.isPlaying
+                        val pos = vlc.currentPositionMs
+                        val dur = vlc.durationMs
+                        _uiState.update {
+                            it.copy(
+                                isPlaying = playing,
+                                positionMs = pos,
+                                durationMs = dur
+                            )
+                        }
+                        if (tick % 5 == 0 && playing) {
+                            state.activeStream?.let { s ->
+                                recordWatchHistory(s, state.title, state.subtitle, pos, dur)
+                            }
+                        }
                     }
-                    if (tick % 5 == 0 && p.isPlaying) {
-                        val s = _uiState.value.activeStream
-                        if (s != null) {
-                            recordWatchHistory(s, _uiState.value.title, _uiState.value.subtitle, pos, dur)
+                    PlaybackEngine.LIBMPV -> {
+                        val mpv = playerManager.mpvController
+                        val playing = mpv.isPlaying
+                        val pos = mpv.currentPositionMs
+                        val dur = mpv.durationMs
+                        val telemetry = mpv.refreshTelemetrySnapshot()
+                        _uiState.update {
+                            it.copy(
+                                isPlaying = playing,
+                                positionMs = pos,
+                                durationMs = dur,
+                                telemetry = telemetry
+                            )
+                        }
+                        if (tick == 1 || tick % 4 == 0) {
+                            refreshTracks()
+                        }
+                        if (tick % 5 == 0 && playing) {
+                            state.activeStream?.let { s ->
+                                recordWatchHistory(s, state.title, state.subtitle, pos, dur)
+                            }
+                        }
+                    }
+                    else -> {
+                        val p = _activePlayer.value
+                        if (p != null) {
+                            val pos = p.currentPosition.coerceAtLeast(0L)
+                            val dur = p.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
+                            _uiState.update {
+                                it.copy(
+                                    isPlaying = p.isPlaying,
+                                    positionMs = pos,
+                                    durationMs = dur
+                                )
+                            }
+                            if (tick % 5 == 0 && p.isPlaying) {
+                                state.activeStream?.let { s ->
+                                    recordWatchHistory(s, state.title, state.subtitle, pos, dur)
+                                }
+                            }
                         }
                     }
                 }

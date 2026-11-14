@@ -32,8 +32,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -66,10 +66,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.data.local.CategoryEntity
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.StreamItemEntity
 import com.example.data.local.WatchProgressEntity
-import com.example.player.ExternalPlayerHelper
+import com.example.ui.components.EngineBadgePill
+import com.example.ui.components.EngineSwitcherModalSheet
 import com.example.ui.components.NovaFormatters
+import com.example.ui.components.engineAccentColor
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.CinemaGold
 import com.example.ui.theme.ElectricCyan
@@ -194,12 +197,14 @@ fun MoviesScreen(
 fun MovieDetailScreen(
     movie: StreamItemEntity?,
     resumeProgress: WatchProgressEntity?,
+    defaultEngine: PlaybackEngine,
     onBack: () -> Unit,
     onLoadRichInfo: (StreamItemEntity) -> Unit,
     onToggleFavorite: (StreamItemEntity) -> Unit,
-    onPlayMovie: (StreamItemEntity, Long) -> Unit
+    onSetStreamEngine: (StreamItemEntity, PlaybackEngine) -> Unit,
+    onPlayMovie: (StreamItemEntity, Long, PlaybackEngine?) -> Unit
 ) {
-    val context = LocalContext.current
+    var showEngineSheet by remember { mutableStateOf(false) }
     LaunchedEffect(movie?.id) {
         if (movie != null) onLoadRichInfo(movie)
     }
@@ -280,6 +285,12 @@ fun MovieDetailScreen(
                         Text(movie.containerExt.uppercase(), style = MaterialTheme.typography.labelSmall, color = ElectricCyan, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
                     }
                 }
+                val savedMovieEngine = PlaybackEngine.fromStoredName(movie.preferredEngine)
+                EngineBadgePill(
+                    engine = savedMovieEngine.takeIf { it != PlaybackEngine.DEFAULT } ?: defaultEngine,
+                    prefix = if (savedMovieEngine != PlaybackEngine.DEFAULT) "PINNED:" else "",
+                    onClick = { showEngineSheet = true }
+                )
             }
             if (movie.genre.isNotBlank()) {
                 Spacer(Modifier.height(6.dp))
@@ -288,9 +299,11 @@ fun MovieDetailScreen(
 
             Spacer(Modifier.height(18.dp))
             val resumeMs = resumeProgress?.positionMs?.takeIf { it > 5000L } ?: 0L
+            val savedOverride = PlaybackEngine.fromStoredName(movie.preferredEngine)
+            val effectiveMovieEngine = savedOverride.takeIf { it != PlaybackEngine.DEFAULT } ?: defaultEngine
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
-                    onClick = { onPlayMovie(movie, resumeMs) },
+                    onClick = { onPlayMovie(movie, resumeMs, null) },
                     colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
                     modifier = Modifier.weight(1f).height(52.dp).testTag("play_movie_button")
                 ) {
@@ -302,16 +315,23 @@ fun MovieDetailScreen(
                     )
                 }
                 OutlinedButton(
-                    onClick = { ExternalPlayerHelper.launchExternalPlayer(context, movie.streamUrl, movie.title) },
-                    modifier = Modifier.height(52.dp)
+                    onClick = { showEngineSheet = true },
+                    modifier = Modifier.height(52.dp).testTag("movie_play_with_button")
                 ) {
-                    Icon(Icons.Default.OpenInNew, contentDescription = "External player")
+                    Icon(
+                        Icons.Default.Memory,
+                        contentDescription = "Choose player engine",
+                        tint = engineAccentColor(effectiveMovieEngine),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Play With")
                 }
             }
             if (resumeMs > 0L) {
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
-                    onClick = { onPlayMovie(movie, 0L) },
+                    onClick = { onPlayMovie(movie, 0L, null) },
                     modifier = Modifier.fillMaxWidth().height(48.dp)
                 ) {
                     Text("Play From Beginning")
@@ -335,6 +355,32 @@ fun MovieDetailScreen(
                 Text("Director: ${movie.director}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
             }
             Spacer(Modifier.height(84.dp))
+        }
+
+        if (showEngineSheet) {
+            val savedOverride = PlaybackEngine.fromStoredName(movie.preferredEngine)
+            val resumeMs = resumeProgress?.positionMs?.takeIf { it > 5000L } ?: 0L
+            EngineSwitcherModalSheet(
+                streamTitle = movie.title,
+                activeEngine = savedOverride.takeIf { it != PlaybackEngine.DEFAULT } ?: defaultEngine,
+                savedStreamEngine = savedOverride,
+                hasDrm = movie.drmLicenseKey.isNotBlank(),
+                onSelectEngine = { chosenEngine, rememberForStream ->
+                    if (rememberForStream) {
+                        onSetStreamEngine(movie, chosenEngine)
+                    }
+                    val updatedMovie = if (rememberForStream) {
+                        movie.copy(preferredEngine = chosenEngine.name)
+                    } else {
+                        movie
+                    }
+                    onPlayMovie(updatedMovie, resumeMs, chosenEngine)
+                },
+                onResetStreamDefault = {
+                    onSetStreamEngine(movie, PlaybackEngine.DEFAULT)
+                },
+                onDismiss = { showEngineSheet = false }
+            )
         }
     }
 }

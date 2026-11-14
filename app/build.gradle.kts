@@ -65,6 +65,11 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  packaging {
+    jniLibs {
+      pickFirsts += "**/libc++_shared.so"
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
@@ -124,8 +129,12 @@ dependencies {
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.androidx.media3.exoplayer.hls)
   implementation(libs.androidx.media3.exoplayer.dash)
+  implementation(libs.androidx.media3.exoplayer.rtsp)
+  implementation(libs.androidx.media3.exoplayer.smoothstreaming)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.common)
+  implementation(libs.libvlc.all)
+  implementation(libs.mpv.android.lib)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.kotlinx.serialization.json)

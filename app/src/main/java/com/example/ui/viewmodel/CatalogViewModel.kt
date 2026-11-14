@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.CategoryEntity
 import com.example.data.local.EpgProgramEntity
 import com.example.data.local.MediaCategoryType
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.PlaylistProfileEntity
 import com.example.data.local.SeriesEpisodeEntity
 import com.example.data.local.StreamItemEntity
@@ -159,6 +160,12 @@ class CatalogViewModel(
     fun toggleStreamLock(stream: StreamItemEntity) {
         viewModelScope.launch {
             repository.setStreamLocked(stream.id, !stream.isLocked)
+        }
+    }
+
+    fun setStreamPreferredEngine(stream: StreamItemEntity, engine: PlaybackEngine) {
+        viewModelScope.launch {
+            repository.setStreamPreferredEngine(stream.id, engine)
         }
     }
 

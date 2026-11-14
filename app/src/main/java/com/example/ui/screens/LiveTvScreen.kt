@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
@@ -39,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -57,10 +59,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.local.CategoryEntity
 import com.example.data.local.EpgProgramEntity
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.StreamItemEntity
 import com.example.ui.components.ChannelLogoBadge
+import com.example.ui.components.EngineBadgePill
+import com.example.ui.components.EngineSwitcherModalSheet
 import com.example.ui.components.NovaFormatters
 import com.example.ui.components.NovaGlassCard
+import com.example.ui.components.engineAccentColor
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.CinemaGold
 import com.example.ui.theme.ElectricCyan
@@ -83,17 +89,20 @@ fun LiveTvScreen(
     initialCatchupOnly: Boolean,
     isPinSessionUnlocked: Boolean,
     hasPinConfigured: Boolean,
+    defaultEngine: PlaybackEngine,
     onBack: () -> Unit,
     onRequestUnlock: (isLocked: Boolean, reason: String, onUnlocked: () -> Unit) -> Unit,
     onToggleFavorite: (StreamItemEntity) -> Unit,
     onToggleStreamLock: (StreamItemEntity) -> Unit,
-    onPlayChannel: (StreamItemEntity, List<StreamItemEntity>) -> Unit
+    onSetStreamEngine: (StreamItemEntity, PlaybackEngine) -> Unit,
+    onPlayChannel: (StreamItemEntity, List<StreamItemEntity>, PlaybackEngine?) -> Unit
 ) {
     var selectedCategoryKey by remember(initialCategoryKey) { mutableStateOf(initialCategoryKey ?: "ALL") }
     var favoritesOnly by remember(initialFavoritesOnly) { mutableStateOf(initialFavoritesOnly) }
     var catchupOnly by remember(initialCatchupOnly) { mutableStateOf(initialCatchupOnly) }
     var query by remember { mutableStateOf("") }
     var focusedChannel by remember { mutableStateOf<StreamItemEntity?>(null) }
+    var enginePickerChannel by remember { mutableStateOf<StreamItemEntity?>(null) }
 
     val lockedCategoryKeys = remember(categories, isPinSessionUnlocked, hasPinConfigured) {
         if (!hasPinConfigured || isPinSessionUnlocked) emptySet()
@@ -250,7 +259,12 @@ fun LiveTvScreen(
                             onClick = {
                                 onRequestUnlock(ch.isLocked, "Unlock channel: ${ch.title}") {
                                     focusedChannel = ch
-                                    onPlayChannel(ch, filteredChannels)
+                                    onPlayChannel(ch, filteredChannels, null)
+                                }
+                            },
+                            onOpenEnginePicker = {
+                                onRequestUnlock(ch.isLocked, "Unlock channel: ${ch.title}") {
+                                    enginePickerChannel = ch
                                 }
                             },
                             onToggleFav = { onToggleFavorite(ch) },
@@ -270,17 +284,26 @@ fun LiveTvScreen(
                         val upcoming = epgByChannel[preview.epgChannelId].orEmpty()
                             .filter { it.endEpochMs >= nowMs }
                             .take(6)
+                        val savedPreviewEngine = PlaybackEngine.fromStoredName(preview.preferredEngine)
                         Column(modifier = Modifier.padding(16.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 ChannelLogoBadge(preview.logoUrl, preview.title, size = 54.dp)
                                 Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(preview.title, style = MaterialTheme.typography.titleLarge, maxLines = 1)
-                                    Text(
-                                        "CH ${preview.channelNumber.toString().padStart(3, '0')}",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = ElectricCyan
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            "CH ${preview.channelNumber.toString().padStart(3, '0')}",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = ElectricCyan
+                                        )
+                                        if (savedPreviewEngine != PlaybackEngine.DEFAULT) {
+                                            EngineBadgePill(engine = savedPreviewEngine)
+                                        }
+                                    }
                                 }
                             }
                             Spacer(Modifier.height(14.dp))
@@ -290,7 +313,7 @@ fun LiveTvScreen(
                                     .clip(MaterialTheme.shapes.small)
                                     .clickable {
                                         onRequestUnlock(preview.isLocked, "Unlock channel: ${preview.title}") {
-                                            onPlayChannel(preview, filteredChannels)
+                                            onPlayChannel(preview, filteredChannels, null)
                                         }
                                     },
                                 color = ElectricCyan
@@ -304,6 +327,25 @@ fun LiveTvScreen(
                                     Spacer(Modifier.width(6.dp))
                                     Text("Watch Fullscreen", style = MaterialTheme.typography.labelLarge, color = ObsidianBg)
                                 }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    onRequestUnlock(preview.isLocked, "Unlock channel: ${preview.title}") {
+                                        enginePickerChannel = preview
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("live_preview_engine_button")
+                            ) {
+                                Icon(Icons.Default.Memory, contentDescription = null, tint = CinemaGold, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (savedPreviewEngine != PlaybackEngine.DEFAULT) {
+                                        "Engine: ${savedPreviewEngine.shortBadge} (Change)"
+                                    } else {
+                                        "Play With / Engine…"
+                                    }
+                                )
                             }
                             Spacer(Modifier.height(14.dp))
                             Text("Upcoming Schedule", style = MaterialTheme.typography.titleSmall, color = ElectricCyan)
@@ -344,7 +386,12 @@ fun LiveTvScreen(
                         isLockedForDisplay = ch.isLocked && !isPinSessionUnlocked && hasPinConfigured,
                         onClick = {
                             onRequestUnlock(ch.isLocked, "Unlock channel: ${ch.title}") {
-                                onPlayChannel(ch, filteredChannels)
+                                onPlayChannel(ch, filteredChannels, null)
+                            }
+                        },
+                        onOpenEnginePicker = {
+                            onRequestUnlock(ch.isLocked, "Unlock channel: ${ch.title}") {
+                                enginePickerChannel = ch
                             }
                         },
                         onToggleFav = { onToggleFavorite(ch) },
@@ -353,6 +400,31 @@ fun LiveTvScreen(
                 }
                 item { Spacer(Modifier.height(84.dp)) }
             }
+        }
+
+        enginePickerChannel?.let { targetCh ->
+            val savedOverride = PlaybackEngine.fromStoredName(targetCh.preferredEngine)
+            EngineSwitcherModalSheet(
+                streamTitle = targetCh.title,
+                activeEngine = savedOverride.takeIf { it != PlaybackEngine.DEFAULT } ?: defaultEngine,
+                savedStreamEngine = savedOverride,
+                hasDrm = targetCh.drmLicenseKey.isNotBlank(),
+                onSelectEngine = { chosenEngine, rememberForStream ->
+                    if (rememberForStream) {
+                        onSetStreamEngine(targetCh, chosenEngine)
+                    }
+                    val updatedCh = if (rememberForStream) {
+                        targetCh.copy(preferredEngine = chosenEngine.name)
+                    } else {
+                        targetCh
+                    }
+                    onPlayChannel(updatedCh, filteredChannels, chosenEngine)
+                },
+                onResetStreamDefault = {
+                    onSetStreamEngine(targetCh, PlaybackEngine.DEFAULT)
+                },
+                onDismiss = { enginePickerChannel = null }
+            )
         }
     }
 }
@@ -405,9 +477,11 @@ private fun LiveChannelRow(
     isSelected: Boolean,
     isLockedForDisplay: Boolean,
     onClick: () -> Unit,
+    onOpenEnginePicker: () -> Unit,
     onToggleFav: () -> Unit,
     onToggleLock: () -> Unit
 ) {
+    val savedEngine = PlaybackEngine.fromStoredName(channel.preferredEngine)
     NovaGlassCard(
         highlighted = isSelected,
         modifier = Modifier.fillMaxWidth().testTag("live_channel_${channel.id}"),
@@ -434,6 +508,10 @@ private fun LiveChannelRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
+                    if (savedEngine != PlaybackEngine.DEFAULT) {
+                        Spacer(Modifier.width(6.dp))
+                        EngineBadgePill(engine = savedEngine)
+                    }
                     if (channel.catchupDays > 0 || channel.catchupType.isNotBlank()) {
                         Spacer(Modifier.width(6.dp))
                         Surface(
@@ -478,6 +556,17 @@ private fun LiveChannelRow(
                         color = TextSecondary
                     )
                 }
+            }
+            IconButton(
+                onClick = onOpenEnginePicker,
+                modifier = Modifier.minimumInteractiveComponentSize().testTag("live_engine_${channel.id}")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Memory,
+                    contentDescription = "Choose player engine",
+                    tint = if (savedEngine != PlaybackEngine.DEFAULT) engineAccentColor(savedEngine) else TextMuted,
+                    modifier = Modifier.size(18.dp)
+                )
             }
             IconButton(
                 onClick = onToggleLock,

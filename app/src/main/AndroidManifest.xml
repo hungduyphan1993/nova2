@@ -5,6 +5,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <queries>
+        <package android:name="is.xyz.mpv" />
+        <package android:name="is.xyz.mpv.ytdl" />
+        <package android:name="org.videolan.vlc" />
+        <package android:name="org.videolan.vlc.debug" />
+        <package android:name="com.mxtech.videoplayer.pro" />
+        <package android:name="com.mxtech.videoplayer.ad" />
+        <package android:name="com.brouken.player" />
+        <package android:name="org.xbmc.kodi" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="video/*" />
+        </intent>
+    </queries>
+
     <application
         android:name=".NovaStreamApp"
         android:allowBackup="true"

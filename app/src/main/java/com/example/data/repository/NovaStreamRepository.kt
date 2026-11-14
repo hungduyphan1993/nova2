@@ -7,6 +7,7 @@ import com.example.data.local.CategoryEntity
 import com.example.data.local.EpgProgramEntity
 import com.example.data.local.MediaCategoryType
 import com.example.data.local.MediaTypeCount
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.PlaylistProfileEntity
 import com.example.data.local.PlaylistSourceType
 import com.example.data.local.PreferencesRepository
@@ -38,13 +39,14 @@ sealed class SyncStage {
 
 @Serializable
 data class NovaBackupBundle(
-    val version: Int = 1,
+    val version: Int = 2,
     val exportedAt: Long = System.currentTimeMillis(),
     val preferences: UserPreferences,
     val profiles: List<PlaylistProfileEntity>,
     val categories: List<CategoryEntity> = emptyList(),
     val favoriteStreamRemoteIds: List<String> = emptyList(),
     val lockedStreamRemoteIds: List<String> = emptyList(),
+    val preferredEnginesByRemoteId: Map<String, String> = emptyMap(),
     val watchProgress: List<WatchProgressEntity> = emptyList()
 )
 
@@ -116,6 +118,12 @@ class NovaStreamRepository(
 
     suspend fun setStreamLocked(streamId: Long, locked: Boolean) =
         withContext(Dispatchers.IO) { streamDao.setLocked(streamId, locked) }
+
+    suspend fun setStreamPreferredEngine(streamId: Long, engine: PlaybackEngine) =
+        withContext(Dispatchers.IO) {
+            val stored = if (engine == PlaybackEngine.DEFAULT) "" else engine.name
+            streamDao.setPreferredEngine(streamId, stored)
+        }
 
     suspend fun setCategoryPinned(categoryId: Long, pinned: Boolean) =
         withContext(Dispatchers.IO) { categoryDao.setPinned(categoryId, pinned) }
@@ -194,6 +202,7 @@ class NovaStreamRepository(
         val existingCats = categoryDao.getAllForProfile(profileId).associateBy { it.categoryKey }
         val favIds = streamDao.getFavorites(profileId).map { it.remoteStreamId }.toSet()
         val lockedIds = streamDao.getLockedItems(profileId).map { it.remoteStreamId }.toSet()
+        val engineOverrides = streamDao.getEngineOverrides(profileId).associate { it.remoteStreamId to it.preferredEngine }
 
         onProgress(SyncStage.InProgress("Fetching Categories", "Live, VOD & Series folders"))
         val liveCats = xtreamApi.fetchCategories(profileId, profile.serverUrl, profile.username, profile.password, profile.userAgent, MediaCategoryType.LIVE)
@@ -217,7 +226,8 @@ class NovaStreamRepository(
         val allStreams = (liveStreams + vodStreams + seriesStreams).map { item ->
             item.copy(
                 isFavorite = item.remoteStreamId in favIds,
-                isLocked = item.remoteStreamId in lockedIds
+                isLocked = item.remoteStreamId in lockedIds,
+                preferredEngine = engineOverrides[item.remoteStreamId].orEmpty()
             )
         }
 
@@ -305,6 +315,7 @@ class NovaStreamRepository(
         val existingCats = categoryDao.getAllForProfile(profileId).associateBy { it.categoryKey }
         val favIds = streamDao.getFavorites(profileId).map { it.remoteStreamId }.toSet()
         val lockedIds = streamDao.getLockedItems(profileId).map { it.remoteStreamId }.toSet()
+        val engineOverrides = streamDao.getEngineOverrides(profileId).associate { it.remoteStreamId to it.preferredEngine }
 
         categoryDao.deleteByProfile(profileId)
         streamDao.deleteByProfile(profileId)
@@ -343,7 +354,11 @@ class NovaStreamRepository(
             }
             if (streams.isNotEmpty()) {
                 val merged = streams.map {
-                    it.copy(isFavorite = it.remoteStreamId in favIds, isLocked = it.remoteStreamId in lockedIds)
+                    it.copy(
+                        isFavorite = it.remoteStreamId in favIds,
+                        isLocked = it.remoteStreamId in lockedIds,
+                        preferredEngine = engineOverrides[it.remoteStreamId].orEmpty()
+                    )
                 }
                 streamDao.insertAll(merged)
                 totalStreams += merged.size
@@ -461,6 +476,8 @@ class NovaStreamRepository(
             val allCats = profiles.flatMap { categoryDao.getAllForProfile(it.id) }
             val favs = profiles.flatMap { streamDao.getFavorites(it.id) }.map { it.remoteStreamId }
             val locked = profiles.flatMap { streamDao.getLockedItems(it.id) }.map { it.remoteStreamId }
+            val engineOverrides = profiles.flatMap { streamDao.getEngineOverrides(it.id) }
+                .associate { it.remoteStreamId to it.preferredEngine }
             val progress = profiles.flatMap { progressDao.getAllForProfile(it.id) }
             val userPrefs = prefs.preferencesFlow.firstOrNull() ?: UserPreferences()
             val bundle = NovaBackupBundle(
@@ -469,6 +486,7 @@ class NovaStreamRepository(
                 categories = allCats,
                 favoriteStreamRemoteIds = favs,
                 lockedStreamRemoteIds = locked,
+                preferredEnginesByRemoteId = engineOverrides,
                 watchProgress = progress
             )
             val payload = json.encodeToString(bundle)
@@ -499,6 +517,9 @@ class NovaStreamRepository(
                 } else {
                     runCatching { refreshActiveProfile(newId, onProgress) }
                 }
+                bundle.preferredEnginesByRemoteId.forEach { (remoteId, engName) ->
+                    streamDao.setPreferredEngineByRemoteId(newId, remoteId, engName)
+                }
             }
             if (lastId > 0) {
                 prefs.setActiveProfileId(lastId)
@@ -506,6 +527,9 @@ class NovaStreamRepository(
             prefs.setBufferPreset(bundle.preferences.bufferPreset)
             prefs.setDefaultAspectRatio(bundle.preferences.defaultAspectRatio)
             prefs.setAutoPip(bundle.preferences.autoPipOnBackground)
+            prefs.setDefaultEngine(bundle.preferences.defaultEngine)
+            prefs.setVlcHardwareMode(bundle.preferences.vlcHardwareMode)
+            prefs.setAutoFallbackEngine(bundle.preferences.autoFallbackEngine)
             "Restored ${bundle.profiles.size} profile(s)"
         }
     }

@@ -95,6 +95,7 @@ data class StreamItemEntity(
     val drmLicenseKey: String = "",
     val isFavorite: Boolean = false,
     val isLocked: Boolean = false,
+    val preferredEngine: String = "",
     val addedAt: Long = 0L
 )
 

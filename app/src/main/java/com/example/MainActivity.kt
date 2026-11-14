@@ -238,6 +238,20 @@ private fun NovaStreamRoot(
         }
     }
 
+    LaunchedEffect(playerUiState.externalLaunchRequest) {
+        val req = playerUiState.externalLaunchRequest ?: return@LaunchedEffect
+        ExternalPlayerHelper.launchWithEngine(
+            context = context,
+            engine = req.engine,
+            url = req.url,
+            title = req.title,
+            userAgent = req.userAgent,
+            httpHeadersJson = req.httpHeadersJson,
+            positionMs = req.positionMs
+        )
+        playerVm.consumeExternalLaunchRequest()
+    }
+
     val startDest = initialRouteResolved
     if (startDest == null) {
         Box(
@@ -382,6 +396,7 @@ private fun NovaStreamRoot(
                         initialCatchupOnly = args.catchupOnly,
                         isPinSessionUnlocked = isPinSessionUnlocked,
                         hasPinConfigured = preferences.hasPinConfigured,
+                        defaultEngine = preferences.defaultEngine,
                         onBack = { navController.popBackStack() },
                         onRequestUnlock = { locked, reason, action ->
                             mainVm.requestUnlockOrProceed(locked, reason, action)
@@ -392,12 +407,17 @@ private fun NovaStreamRoot(
                                 catalogVm.toggleStreamLock(item)
                             }
                         },
-                        onPlayChannel = { ch, queue ->
-                            if (preferences.preferExternalPlayer) {
-                                ExternalPlayerHelper.launchExternalPlayer(context, ch.streamUrl, ch.title)
-                            } else {
-                                playerVm.playLiveChannel(ch, queue, userAgent, openFullscreen = true)
-                            }
+                        onSetStreamEngine = { item, engine ->
+                            catalogVm.setStreamPreferredEngine(item, engine)
+                        },
+                        onPlayChannel = { ch, queue, explicitEngine ->
+                            playerVm.playLiveChannel(
+                                stream = ch,
+                                channelQueue = queue,
+                                userAgent = userAgent,
+                                openFullscreen = true,
+                                explicitEngine = explicitEngine
+                            )
                         }
                     )
                 }
@@ -423,17 +443,17 @@ private fun NovaStreamRoot(
                     MovieDetailScreen(
                         movie = movie,
                         resumeProgress = resume,
+                        defaultEngine = preferences.defaultEngine,
                         onBack = { navController.popBackStack() },
                         onLoadRichInfo = { m ->
                             activeProfile?.id?.let { pid -> catalogVm.loadVodRichInfo(pid, m) }
                         },
                         onToggleFavorite = { catalogVm.toggleFavorite(it) },
-                        onPlayMovie = { m, resumeMs ->
-                            if (preferences.preferExternalPlayer) {
-                                ExternalPlayerHelper.launchExternalPlayer(context, m.streamUrl, m.title)
-                            } else {
-                                playerVm.playMovie(m, userAgent, resumeMs)
-                            }
+                        onSetStreamEngine = { item, engine ->
+                            catalogVm.setStreamPreferredEngine(item, engine)
+                        },
+                        onPlayMovie = { m, resumeMs, explicitEngine ->
+                            playerVm.playMovie(m, userAgent, resumeMs, explicitEngine = explicitEngine)
                         }
                     )
                 }
@@ -468,17 +488,17 @@ private fun NovaStreamRoot(
                     SeriesDetailScreen(
                         series = series,
                         episodes = episodes,
+                        defaultEngine = preferences.defaultEngine,
                         onBack = { navController.popBackStack() },
                         onLoadEpisodes = { s ->
                             if (profileId > 0) catalogVm.loadSeriesEpisodes(profileId, s)
                         },
                         onToggleFavorite = { catalogVm.toggleFavorite(it) },
-                        onPlayEpisode = { s, ep, allEps ->
-                            if (preferences.preferExternalPlayer) {
-                                ExternalPlayerHelper.launchExternalPlayer(context, ep.streamUrl, "${s.title} - ${ep.title}")
-                            } else {
-                                playerVm.playSeriesEpisode(s, ep, allEps, userAgent)
-                            }
+                        onSetStreamEngine = { item, engine ->
+                            catalogVm.setStreamPreferredEngine(item, engine)
+                        },
+                        onPlayEpisode = { s, ep, allEps, explicitEngine ->
+                            playerVm.playSeriesEpisode(s, ep, allEps, userAgent, explicitEngine = explicitEngine)
                         }
                     )
                 }
@@ -546,10 +566,13 @@ private fun NovaStreamRoot(
                         onBack = { navController.popBackStack() },
                         onSetPin = { mainVm.setParentalPin(it) },
                         onClearPin = { mainVm.clearParentalPin() },
+                        onSetDefaultEngine = { mainVm.setDefaultEngine(it) },
+                        onSetVlcHwMode = { mainVm.setVlcHardwareMode(it) },
+                        onSetMpvHwMode = { mainVm.setMpvHardwareMode(it) },
+                        onSetAutoFallbackEngine = { mainVm.setAutoFallbackEngine(it) },
                         onSetBufferPreset = { mainVm.setBufferPreset(it) },
                         onSetDefaultAspect = { mainVm.setDefaultAspectRatio(it) },
                         onSetAutoPip = { mainVm.setAutoPip(it) },
-                        onSetPreferExternal = { mainVm.setPreferExternalPlayer(it) },
                         onSetAutoReconnect = { mainVm.setAutoReconnectLive(it) },
                         onToggleCatPinned = { id, p -> mainVm.setCategoryPinned(id, p) },
                         onToggleCatHidden = { id, h -> mainVm.setCategoryHidden(id, h) },
@@ -600,6 +623,9 @@ private fun NovaStreamRoot(
 
                 DockedMiniPlayerBar(
                     player = activePlayer,
+                    vlcController = playerVm.vlcController,
+                    mpvController = playerVm.mpvController,
+                    activeEngine = playerUiState.activeEngine,
                     title = playerUiState.title,
                     subtitle = playerUiState.subtitle,
                     nowProgram = miniNowProgram,
@@ -612,11 +638,13 @@ private fun NovaStreamRoot(
                 )
             }
 
-            // Fullscreen Media3 Player Overlay (or PiP Mode)
+            // Fullscreen Media3 / LibVLC / libmpv Player Overlay (or PiP Mode)
             if (playerUiState.mode == PlayerPresentationMode.FULLSCREEN || isInPipMode) {
                 PlayerOverlayScreen(
                     uiState = playerUiState,
                     player = activePlayer,
+                    vlcController = playerVm.vlcController,
+                    mpvController = playerVm.mpvController,
                     epgByChannel = epgByChannel,
                     isInPipMode = isInPipMode,
                     onBack = {
@@ -640,6 +668,7 @@ private fun NovaStreamRoot(
                     onToggleSignalHud = { playerVm.toggleSignalHud() },
                     onSelectTrack = { playerVm.selectTrack(it) },
                     onResetTrackAuto = { type, disable -> playerVm.resetTrackAuto(type, disable) },
+                    onSwitchEngine = { target, save -> playerVm.switchEngine(target, save) },
                     onSetSleepTimer = { playerVm.setSleepTimer(it) },
                     onRetryStream = { playerVm.retryActiveStream() },
                     onEnterPip = onRequestPip

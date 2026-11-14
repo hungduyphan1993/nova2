@@ -8,8 +8,11 @@ import com.example.data.local.AspectRatioMode
 import com.example.data.local.BufferPreset
 import com.example.data.local.CategoryEntity
 import com.example.data.local.MediaCategoryType
+import com.example.data.local.MpvHardwareMode
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.PlaylistProfileEntity
 import com.example.data.local.UserPreferences
+import com.example.data.local.VlcHardwareMode
 import com.example.data.network.DiagnosticReport
 import com.example.data.network.StreamDiagnosticsService
 import com.example.data.repository.NovaStreamRepository
@@ -252,6 +255,25 @@ class MainViewModel(
 
     fun setPreferExternalPlayer(enabled: Boolean) {
         viewModelScope.launch { repository.prefs.setPreferExternalPlayer(enabled) }
+    }
+
+    fun setDefaultEngine(engine: PlaybackEngine) {
+        viewModelScope.launch {
+            repository.prefs.setDefaultEngine(engine)
+            _toastMessage.value = "Default player set to ${engine.label}"
+        }
+    }
+
+    fun setVlcHardwareMode(mode: VlcHardwareMode) {
+        viewModelScope.launch { repository.prefs.setVlcHardwareMode(mode) }
+    }
+
+    fun setMpvHardwareMode(mode: MpvHardwareMode) {
+        viewModelScope.launch { repository.prefs.setMpvHardwareMode(mode) }
+    }
+
+    fun setAutoFallbackEngine(enabled: Boolean) {
+        viewModelScope.launch { repository.prefs.setAutoFallbackEngine(enabled) }
     }
 
     fun setAutoReconnectLive(enabled: Boolean) {

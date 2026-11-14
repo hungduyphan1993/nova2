@@ -96,6 +96,9 @@ interface StreamItemDao {
     @Query("SELECT * FROM stream_items WHERE profileId = :profileId AND isLocked = 1")
     suspend fun getLockedItems(profileId: Long): List<StreamItemEntity>
 
+    @Query("SELECT * FROM stream_items WHERE profileId = :profileId AND preferredEngine != ''")
+    suspend fun getEngineOverrides(profileId: Long): List<StreamItemEntity>
+
     @Query(
         """
         SELECT mediaType, COUNT(*) as total FROM stream_items 
@@ -123,6 +126,12 @@ interface StreamItemDao {
 
     @Query("UPDATE stream_items SET isLocked = :locked WHERE id = :id")
     suspend fun setLocked(id: Long, locked: Boolean)
+
+    @Query("UPDATE stream_items SET preferredEngine = :engine WHERE id = :id")
+    suspend fun setPreferredEngine(id: Long, engine: String)
+
+    @Query("UPDATE stream_items SET preferredEngine = :engine WHERE profileId = :profileId AND remoteStreamId = :remoteStreamId")
+    suspend fun setPreferredEngineByRemoteId(profileId: Long, remoteStreamId: String, engine: String)
 
     @Query("UPDATE stream_items SET plot = :plot, cast = :cast, director = :director, genre = :genre, backdropUrl = :backdrop, rating = :rating WHERE id = :id")
     suspend fun updateVodMetadata(

@@ -71,9 +71,13 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.SubcomposeAsyncImage
+import com.example.data.local.AspectRatioMode
 import com.example.data.local.EpgProgramEntity
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.StreamItemEntity
 import com.example.data.repository.SyncStage
+import com.example.player.MpvPlayerController
+import com.example.player.VlcPlayerController
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.CyanGlowBorder
 import com.example.ui.theme.ElectricCyan
@@ -600,6 +604,9 @@ private fun EpgNowNextStage(
 @Composable
 fun DockedMiniPlayerBar(
     player: ExoPlayer?,
+    vlcController: VlcPlayerController? = null,
+    mpvController: MpvPlayerController? = null,
+    activeEngine: PlaybackEngine = PlaybackEngine.EXOPLAYER,
     title: String,
     subtitle: String,
     nowProgram: EpgProgramEntity?,
@@ -642,7 +649,19 @@ fun DockedMiniPlayerBar(
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color.Black)
                 ) {
-                    if (player != null) {
+                    if (activeEngine == PlaybackEngine.LIBVLC && vlcController != null) {
+                        VlcPlayerSurface(
+                            vlcController = vlcController,
+                            aspectRatioMode = AspectRatioMode.ZOOM,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else if (activeEngine == PlaybackEngine.LIBMPV && mpvController != null) {
+                        MpvPlayerSurface(
+                            mpvController = mpvController,
+                            aspectRatioMode = AspectRatioMode.ZOOM,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else if (player != null) {
                         AndroidView(
                             factory = { ctx ->
                                 PlayerView(ctx).apply {
@@ -671,13 +690,17 @@ fun DockedMiniPlayerBar(
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        EngineBadgePill(engine = activeEngine)
+                    }
                     Text(
                         text = nowProgram?.let { "NOW: ${it.title}" } ?: subtitle,
                         style = MaterialTheme.typography.bodySmall,

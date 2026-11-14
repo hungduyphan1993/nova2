@@ -108,4 +108,42 @@ class NovaParsersTest {
         assertEquals(baseMs, shiftedMs)
         assertTrue(baseMs > 0L)
     }
+
+    @Test
+    fun playbackEngineResolvesStoredNamesAndCatalogCategories() {
+        assertEquals(
+            com.example.data.local.PlaybackEngine.DEFAULT,
+            com.example.data.local.PlaybackEngine.fromStoredName(null)
+        )
+        assertEquals(
+            com.example.data.local.PlaybackEngine.DEFAULT,
+            com.example.data.local.PlaybackEngine.fromStoredName("")
+        )
+        assertEquals(
+            com.example.data.local.PlaybackEngine.LIBVLC,
+            com.example.data.local.PlaybackEngine.fromStoredName("LIBVLC")
+        )
+        assertEquals(
+            com.example.data.local.PlaybackEngine.LIBMPV,
+            com.example.data.local.PlaybackEngine.fromStoredName("LIBMPV")
+        )
+        assertEquals(
+            com.example.data.local.PlaybackEngine.EXTERNAL_MPV,
+            com.example.data.local.PlaybackEngine.fromStoredName("EXTERNAL_MPV")
+        )
+        assertEquals(
+            listOf(
+                com.example.data.local.PlaybackEngine.EXOPLAYER,
+                com.example.data.local.PlaybackEngine.LIBVLC,
+                com.example.data.local.PlaybackEngine.LIBMPV
+            ),
+            com.example.data.local.PlaybackEngine.builtInEngines
+        )
+        assertEquals("mediacodec-copy", com.example.data.local.MpvHardwareMode.AUTO_SAFE.mpvValue)
+        assertEquals("mediacodec", com.example.data.local.MpvHardwareMode.ZERO_COPY.mpvValue)
+        assertEquals("no", com.example.data.local.MpvHardwareMode.SOFTWARE.mpvValue)
+        assertTrue(com.example.data.local.PlaybackEngine.externalEngines.contains(com.example.data.local.PlaybackEngine.EXTERNAL_MPV))
+        assertTrue(com.example.data.local.PlaybackEngine.externalEngines.contains(com.example.data.local.PlaybackEngine.EXTERNAL_VLC))
+        assertTrue(com.example.data.local.PlaybackEngine.selectableGlobalEngines.none { it == com.example.data.local.PlaybackEngine.DEFAULT })
+    }
 }

@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
@@ -107,12 +108,20 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.local.AspectRatioMode
 import com.example.data.local.EpgProgramEntity
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.StreamItemEntity
 import com.example.player.ExternalPlayerHelper
+import com.example.player.MpvPlayerController
 import com.example.player.TrackChoice
+import com.example.player.VlcPlayerController
 import com.example.ui.components.ChannelLogoBadge
 import com.example.ui.components.CinemaInfoBar
+import com.example.ui.components.EngineBadgePill
+import com.example.ui.components.EngineSwitcherModalSheet
+import com.example.ui.components.MpvPlayerSurface
 import com.example.ui.components.NovaFormatters
+import com.example.ui.components.VlcPlayerSurface
+import com.example.ui.components.engineAccentColor
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.CinemaGold
 import com.example.ui.theme.CyanGlowBorder
@@ -132,6 +141,8 @@ import kotlinx.coroutines.delay
 fun PlayerOverlayScreen(
     uiState: PlayerUiState,
     player: ExoPlayer?,
+    vlcController: VlcPlayerController,
+    mpvController: MpvPlayerController,
     epgByChannel: Map<String, List<EpgProgramEntity>>,
     isInPipMode: Boolean,
     onBack: () -> Unit,
@@ -147,6 +158,7 @@ fun PlayerOverlayScreen(
     onToggleSignalHud: () -> Unit,
     onSelectTrack: (TrackChoice) -> Unit,
     onResetTrackAuto: (Int, Boolean) -> Unit,
+    onSwitchEngine: (PlaybackEngine, Boolean) -> Unit,
     onSetSleepTimer: (Int?) -> Unit,
     onRetryStream: () -> Unit,
     onEnterPip: () -> Unit
@@ -155,6 +167,7 @@ fun PlayerOverlayScreen(
     var showOsd by remember { mutableStateOf(true) }
     var showZapperDrawer by remember { mutableStateOf(false) }
     var showTracksSheet by remember { mutableStateOf(false) }
+    var showEngineSheet by remember { mutableStateOf(false) }
     var showSleepDialog by remember { mutableStateOf(false) }
     var showKeypad by remember { mutableStateOf(false) }
     var keypadBuffer by remember { mutableStateOf("") }
@@ -192,8 +205,8 @@ fun PlayerOverlayScreen(
         }
     }
 
-    LaunchedEffect(showOsd, uiState.isPlaying, showZapperDrawer, showTracksSheet) {
-        if (showOsd && uiState.isPlaying && !showZapperDrawer && !showTracksSheet) {
+    LaunchedEffect(showOsd, uiState.isPlaying, showZapperDrawer, showTracksSheet, showEngineSheet) {
+        if (showOsd && uiState.isPlaying && !showZapperDrawer && !showTracksSheet && !showEngineSheet) {
             delay(4500)
             showOsd = false
         }
@@ -248,37 +261,57 @@ fun PlayerOverlayScreen(
                 )
             }
     ) {
-        if (player != null && !uiState.audioOnlyMode) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        layoutParams = FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
+        if (!uiState.audioOnlyMode) {
+            when (uiState.activeEngine) {
+                PlaybackEngine.LIBVLC -> {
+                    VlcPlayerSurface(
+                        vlcController = vlcController,
+                        aspectRatioMode = uiState.aspectRatioMode,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                PlaybackEngine.LIBMPV -> {
+                    MpvPlayerSurface(
+                        mpvController = mpvController,
+                        aspectRatioMode = uiState.aspectRatioMode,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                else -> {
+                    if (player != null) {
+                        AndroidView(
+                            factory = { ctx ->
+                                PlayerView(ctx).apply {
+                                    useController = false
+                                    layoutParams = FrameLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                }
+                            },
+                            update = { view ->
+                                view.player = player
+                                view.resizeMode = when (uiState.aspectRatioMode) {
+                                    AspectRatioMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    AspectRatioMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                    AspectRatioMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    AspectRatioMode.RATIO_16_9 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                    AspectRatioMode.RATIO_4_3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
-                },
-                update = { view ->
-                    view.player = player
-                    view.resizeMode = when (uiState.aspectRatioMode) {
-                        AspectRatioMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        AspectRatioMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                        AspectRatioMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        AspectRatioMode.RATIO_16_9 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                        AspectRatioMode.RATIO_4_3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        } else if (uiState.audioOnlyMode) {
+                }
+            }
+        } else {
             Column(
                 modifier = Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(Icons.Default.Headphones, contentDescription = null, tint = ElectricCyan, modifier = Modifier.size(64.dp))
                 Spacer(Modifier.height(10.dp))
-                Text("Audio-Only Broadcast Mode", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
+                Text("Audio-Only Broadcast Mode (${uiState.activeEngine.shortBadge})", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
                 Text(uiState.title, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
             }
         }
@@ -287,13 +320,13 @@ fun PlayerOverlayScreen(
             // Buffering indicator
             if (uiState.telemetry.isBuffering && uiState.errorMessage == null) {
                 CircularProgressIndicator(
-                    color = ElectricCyan,
+                    color = engineAccentColor(uiState.activeEngine),
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
 
-            // Gesture / Zapping Pill
-            val activePill = gestureHudLabel ?: uiState.zappingIndicator
+            // Gesture / Zapping / Engine Switch Pill
+            val activePill = gestureHudLabel ?: uiState.engineSwitchNotice ?: uiState.zappingIndicator
             if (!activePill.isNullOrBlank()) {
                 Surface(
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 72.dp),
@@ -310,8 +343,11 @@ fun PlayerOverlayScreen(
                 }
             }
 
-            // Error Recovery Banner
+            // Error Recovery Banner with Built-In Engine Switch (ExoPlayer / libmpv / LibVLC) & External Handoff
             if (!uiState.errorMessage.isNullOrBlank()) {
+                val alternateBuiltIns = remember(uiState.activeEngine) {
+                    PlaybackEngine.builtInEngines.filter { it != uiState.activeEngine }
+                }
                 Surface(
                     modifier = Modifier
                         .align(Alignment.Center)
@@ -324,30 +360,53 @@ fun PlayerOverlayScreen(
                         modifier = Modifier.padding(20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("Stream Interrupted", style = MaterialTheme.typography.titleMedium, color = BroadcastCrimson)
+                        Text(
+                            "Stream Interrupted (${uiState.activeEngine.shortBadge})",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = BroadcastCrimson
+                        )
                         Spacer(Modifier.height(6.dp))
                         Text(uiState.errorMessage, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                         Spacer(Modifier.height(14.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Button(
                                 onClick = onRetryStream,
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg)
+                                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
+                                modifier = Modifier.testTag("error_retry_button")
                             ) {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("Retry Stream")
+                                Text("Retry")
                             }
-                            OutlinedButton(
-                                onClick = {
-                                    val url = uiState.overrideUrl ?: uiState.activeStream?.streamUrl.orEmpty()
-                                    if (url.isNotBlank()) {
-                                        ExternalPlayerHelper.launchExternalPlayer(context, url, uiState.title)
+                            if (activeChannel?.drmLicenseKey.isNullOrBlank()) {
+                                alternateBuiltIns.forEach { alt ->
+                                    val accent = engineAccentColor(alt)
+                                    OutlinedButton(
+                                        onClick = { onSwitchEngine(alt, false) },
+                                        modifier = Modifier.testTag("error_try_${alt.name.lowercase()}")
+                                    ) {
+                                        Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(18.dp), tint = accent)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Try ${alt.shortBadge}", color = accent)
                                     }
                                 }
+                            }
+                            OutlinedButton(
+                                onClick = { onSwitchEngine(PlaybackEngine.EXTERNAL_MPV, false) },
+                                modifier = Modifier.testTag("error_external_mpv")
                             ) {
-                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp), tint = UltravioletPulse)
                                 Spacer(Modifier.width(6.dp))
-                                Text("External Player")
+                                Text("External MPV", color = UltravioletPulse)
+                            }
+                            OutlinedButton(
+                                onClick = { showEngineSheet = true },
+                                modifier = Modifier.testTag("error_more_players")
+                            ) {
+                                Text("More Players")
                             }
                         }
                     }
@@ -368,6 +427,11 @@ fun PlayerOverlayScreen(
                 ) {
                     Column(modifier = Modifier.padding(10.dp)) {
                         Text("SIGNAL TELEMETRY", style = MaterialTheme.typography.labelSmall, color = ElectricCyan)
+                        Text(
+                            "ENG: ${uiState.activeEngine.label}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = engineAccentColor(uiState.activeEngine)
+                        )
                         Text(
                             "${t.width}x${t.height} • ${if (t.fps > 0f) "${t.fps.toInt()}fps" else "--"}",
                             style = MaterialTheme.typography.labelMedium
@@ -448,15 +512,14 @@ fun PlayerOverlayScreen(
                             Icon(Icons.Default.Headphones, contentDescription = "Audio only mode", tint = if (uiState.audioOnlyMode) ElectricCyan else Color.White)
                         }
                         IconButton(
-                            onClick = {
-                                val url = uiState.overrideUrl ?: uiState.activeStream?.streamUrl.orEmpty()
-                                if (url.isNotBlank()) {
-                                    ExternalPlayerHelper.launchExternalPlayer(context, url, uiState.title)
-                                }
-                            },
-                            modifier = Modifier.minimumInteractiveComponentSize()
+                            onClick = { showEngineSheet = true },
+                            modifier = Modifier.minimumInteractiveComponentSize().testTag("player_top_engine_button")
                         ) {
-                            Icon(Icons.Default.OpenInNew, contentDescription = "Open external player", tint = Color.White)
+                            Icon(
+                                Icons.Default.Memory,
+                                contentDescription = "Switch player engine",
+                                tint = engineAccentColor(uiState.activeEngine)
+                            )
                         }
                         IconButton(onClick = onEnterPip, modifier = Modifier.minimumInteractiveComponentSize().testTag("player_pip_button")) {
                             Icon(Icons.Default.PictureInPictureAlt, contentDescription = "Enter Picture in Picture", tint = Color.White)
@@ -588,6 +651,13 @@ fun PlayerOverlayScreen(
 
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     OsdPillButton(
+                                        icon = Icons.Default.Memory,
+                                        label = uiState.activeEngine.shortBadge,
+                                        testTag = "player_engine_button",
+                                        accentTint = engineAccentColor(uiState.activeEngine),
+                                        onClick = { showEngineSheet = true }
+                                    )
+                                    OsdPillButton(
                                         icon = Icons.Default.Subtitles,
                                         label = "Tracks",
                                         testTag = "player_tracks_button",
@@ -625,18 +695,27 @@ fun PlayerOverlayScreen(
                         testTag = "player_cinema_info_bar",
                         contentInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal),
                         trailingAction = {
-                            Surface(
-                                color = SlateContainerHigh.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(6.dp),
-                                border = BorderStroke(1.dp, GlassBorder)
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = NovaFormatters.formatClock(nowMs),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = ElectricCyan,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                EngineBadgePill(
+                                    engine = uiState.activeEngine,
+                                    onClick = { showEngineSheet = true }
                                 )
+                                Surface(
+                                    color = SlateContainerHigh.copy(alpha = 0.85f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(1.dp, GlassBorder)
+                                ) {
+                                    Text(
+                                        text = NovaFormatters.formatClock(nowMs),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ElectricCyan,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
                         },
                         bottomDeck = if (showOsd) {
@@ -663,6 +742,13 @@ fun PlayerOverlayScreen(
                                             }
                                         )
                                     }
+                                    OsdPillButton(
+                                        icon = Icons.Default.Memory,
+                                        label = "Engine: ${uiState.activeEngine.shortBadge}",
+                                        testTag = "player_engine_button",
+                                        accentTint = engineAccentColor(uiState.activeEngine),
+                                        onClick = { showEngineSheet = true }
+                                    )
                                     OsdPillButton(
                                         icon = Icons.Default.Subtitles,
                                         label = "Tracks",
@@ -903,6 +989,22 @@ fun PlayerOverlayScreen(
                     }
                 }
             }
+            // Playback Engine Switcher Sheet (ExoPlayer, LibVLC, MPV, VLC App, MX, Kodi)
+            if (showEngineSheet) {
+                EngineSwitcherModalSheet(
+                    streamTitle = uiState.title,
+                    activeEngine = uiState.activeEngine,
+                    savedStreamEngine = PlaybackEngine.fromStoredName(activeChannel?.preferredEngine),
+                    hasDrm = !activeChannel?.drmLicenseKey.isNullOrBlank(),
+                    onSelectEngine = { target, rememberForStream ->
+                        onSwitchEngine(target, rememberForStream)
+                    },
+                    onResetStreamDefault = {
+                        onSwitchEngine(PlaybackEngine.DEFAULT, true)
+                    },
+                    onDismiss = { showEngineSheet = false }
+                )
+            }
         }
     }
 }
@@ -912,6 +1014,7 @@ private fun OsdPillButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     testTag: String,
+    accentTint: Color = ElectricCyan,
     onClick: () -> Unit
 ) {
     Surface(
@@ -928,7 +1031,7 @@ private fun OsdPillButton(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(icon, contentDescription = label, tint = ElectricCyan, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = label, tint = accentTint, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
             Text(label, style = MaterialTheme.typography.labelMedium, color = Color.White)
         }

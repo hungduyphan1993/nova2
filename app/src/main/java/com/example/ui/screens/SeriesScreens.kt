@@ -30,12 +30,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -57,10 +59,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.data.local.CategoryEntity
+import com.example.data.local.PlaybackEngine
 import com.example.data.local.SeriesEpisodeEntity
 import com.example.data.local.StreamItemEntity
+import com.example.ui.components.EngineBadgePill
+import com.example.ui.components.EngineSwitcherModalSheet
 import com.example.ui.components.NovaFormatters
 import com.example.ui.components.NovaGlassCard
+import com.example.ui.components.engineAccentColor
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.CinemaGold
 import com.example.ui.theme.ElectricCyan
@@ -174,10 +180,12 @@ fun SeriesScreen(
 fun SeriesDetailScreen(
     series: StreamItemEntity?,
     episodes: List<SeriesEpisodeEntity>,
+    defaultEngine: PlaybackEngine,
     onBack: () -> Unit,
     onLoadEpisodes: (StreamItemEntity) -> Unit,
     onToggleFavorite: (StreamItemEntity) -> Unit,
-    onPlayEpisode: (StreamItemEntity, SeriesEpisodeEntity, List<SeriesEpisodeEntity>) -> Unit
+    onSetStreamEngine: (StreamItemEntity, PlaybackEngine) -> Unit,
+    onPlayEpisode: (StreamItemEntity, SeriesEpisodeEntity, List<SeriesEpisodeEntity>, PlaybackEngine?) -> Unit
 ) {
     LaunchedEffect(series?.id) {
         if (series != null) onLoadEpisodes(series)
@@ -188,6 +196,8 @@ fun SeriesDetailScreen(
     val seasonEpisodes = remember(episodes, selectedSeason) {
         episodes.filter { it.seasonNumber == selectedSeason }
     }
+    var showSeriesEngineSheet by remember { mutableStateOf(false) }
+    var episodeForEngineSheet by remember { mutableStateOf<SeriesEpisodeEntity?>(null) }
 
     Column(
         modifier = Modifier
@@ -250,6 +260,29 @@ fun SeriesDetailScreen(
                             maxLines = 5,
                             overflow = TextOverflow.Ellipsis
                         )
+                        Spacer(Modifier.height(10.dp))
+                        val savedSeriesEngine = PlaybackEngine.fromStoredName(series.preferredEngine)
+                        val effectiveSeriesEngine = savedSeriesEngine.takeIf { it != PlaybackEngine.DEFAULT } ?: defaultEngine
+                        OutlinedButton(
+                            onClick = { showSeriesEngineSheet = true },
+                            modifier = Modifier.testTag("series_engine_button")
+                        ) {
+                            Icon(
+                                Icons.Default.Memory,
+                                contentDescription = null,
+                                tint = engineAccentColor(effectiveSeriesEngine),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = if (savedSeriesEngine != PlaybackEngine.DEFAULT) {
+                                    "Pinned Engine: ${savedSeriesEngine.shortBadge}"
+                                } else {
+                                    "Engine: ${defaultEngine.shortBadge}"
+                                },
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
                     }
                 }
             }
@@ -276,7 +309,7 @@ fun SeriesDetailScreen(
                 items(seasonEpisodes, key = { it.id }) { ep ->
                     NovaGlassCard(
                         modifier = Modifier.fillMaxWidth().testTag("episode_card_${ep.episodeNumber}"),
-                        onClick = { onPlayEpisode(series, ep, episodes) }
+                        onClick = { onPlayEpisode(series, ep, episodes, null) }
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
@@ -310,11 +343,55 @@ fun SeriesDetailScreen(
                                     )
                                 }
                             }
+                            IconButton(
+                                onClick = { episodeForEngineSheet = ep },
+                                modifier = Modifier.minimumInteractiveComponentSize().testTag("episode_engine_${ep.episodeNumber}")
+                            ) {
+                                val savedSeriesEngine = PlaybackEngine.fromStoredName(series.preferredEngine)
+                                Icon(
+                                    Icons.Default.Memory,
+                                    contentDescription = "Play episode with engine",
+                                    tint = if (savedSeriesEngine != PlaybackEngine.DEFAULT) engineAccentColor(savedSeriesEngine) else TextSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
             }
             item { Spacer(Modifier.height(80.dp)) }
+        }
+
+        if (showSeriesEngineSheet || episodeForEngineSheet != null) {
+            val savedOverride = PlaybackEngine.fromStoredName(series.preferredEngine)
+            val targetEpisode = episodeForEngineSheet
+            EngineSwitcherModalSheet(
+                streamTitle = if (targetEpisode != null) "${series.title} • E${targetEpisode.episodeNumber}" else series.title,
+                activeEngine = savedOverride.takeIf { it != PlaybackEngine.DEFAULT } ?: defaultEngine,
+                savedStreamEngine = savedOverride,
+                hasDrm = series.drmLicenseKey.isNotBlank(),
+                defaultRememberSelection = targetEpisode == null,
+                onSelectEngine = { chosenEngine, rememberForStream ->
+                    if (rememberForStream || targetEpisode == null) {
+                        onSetStreamEngine(series, chosenEngine)
+                    }
+                    if (targetEpisode != null) {
+                        val updatedSeries = if (rememberForStream) {
+                            series.copy(preferredEngine = chosenEngine.name)
+                        } else {
+                            series
+                        }
+                        onPlayEpisode(updatedSeries, targetEpisode, episodes, chosenEngine)
+                    }
+                },
+                onResetStreamDefault = {
+                    onSetStreamEngine(series, PlaybackEngine.DEFAULT)
+                },
+                onDismiss = {
+                    showSeriesEngineSheet = false
+                    episodeForEngineSheet = null
+                }
+            )
         }
     }
 }
