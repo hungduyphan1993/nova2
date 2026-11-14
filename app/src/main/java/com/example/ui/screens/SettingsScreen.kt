@@ -75,6 +75,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.config.WhitelabelConfig
 import com.example.data.local.AdultCategoryClassifier
 import com.example.data.local.AspectRatioMode
 import com.example.data.local.BufferPreset
@@ -91,6 +92,9 @@ import com.example.data.repository.SyncStage
 import com.example.ui.components.NovaFormatters
 import com.example.ui.components.NovaGlassCard
 import com.example.ui.components.SyncBanner
+import com.example.ui.components.WhitelabelBrandEmblem
+import com.example.ui.components.WhitelabelBuildMetadataCard
+import com.example.ui.components.WhitelabelSupportCard
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.CinemaGold
 import com.example.ui.theme.ElectricCyan
@@ -112,7 +116,7 @@ enum class SettingsSection(
 ) {
     HUB(
         title = "Settings Control Deck",
-        eyebrow = "NOVASTREAM PREFERENCES",
+        eyebrow = "${WhitelabelConfig.shortBrandUpper} PREFERENCES",
         description = "",
         icon = Icons.Default.Tune,
         accent = ElectricCyan
@@ -382,6 +386,16 @@ fun SettingsScreen(
                             )
                         }
 
+                        if (WhitelabelConfig.hasSupportInfo) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                WhitelabelSupportCard()
+                            }
+                        }
+
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            WhitelabelBuildMetadataCard()
+                        }
+
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             Spacer(Modifier.height(72.dp))
                         }
@@ -583,15 +597,11 @@ private fun SettingsProfileHeroBanner(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(UltravioletPulse.copy(alpha = 0.18f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.LiveTv, contentDescription = null, tint = UltravioletPulse)
-            }
+            WhitelabelBrandEmblem(
+                size = 48.dp,
+                cornerRadius = 14.dp,
+                accentColor = UltravioletPulse
+            )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -605,7 +615,7 @@ private fun SettingsProfileHeroBanner(
                     text = if (profile != null) {
                         "${profile.sourceType.name} • UA: ${profile.userAgent}"
                     } else {
-                        "Tap to configure a playlist or User-Agent"
+                        WhitelabelConfig.tagline
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
@@ -617,7 +627,10 @@ private fun SettingsProfileHeroBanner(
             Button(
                 onClick = onSyncNow,
                 enabled = profile != null,
-                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ElectricCyan,
+                    contentColor = WhitelabelConfig.onPrimaryColor
+                ),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 modifier = Modifier
                     .minimumInteractiveComponentSize()

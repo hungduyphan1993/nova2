@@ -50,6 +50,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.config.WhitelabelConfig
 import com.example.data.local.AspectRatioMode
 import com.example.data.local.BufferPreset
 import com.example.data.local.MpvHardwareMode
@@ -73,7 +74,7 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.UltravioletPulse
 
 private val userAgentPresets = listOf(
-    "NovaStream" to "NovaStream/1.0 (Android)",
+    "${WhitelabelConfig.launcherLabel} Default" to WhitelabelConfig.defaultUserAgent,
     "VLC Player" to "VLC/3.0.20 LibVLC/3.0.20",
     "TiviMate" to "TiviMate/4.7.0 (Android)",
     "IBO Player" to "IBOPlayer/3.9 (AndroidTV)",
@@ -90,7 +91,7 @@ fun PlaylistEpgSubPage(
     onAdjustEpgOffset: (Int) -> Unit
 ) {
     var userAgentDraft by remember(profile?.id, profile?.userAgent) {
-        mutableStateOf(profile?.userAgent ?: "NovaStream/1.0 (Android)")
+        mutableStateOf(profile?.userAgent ?: WhitelabelConfig.defaultUserAgent)
     }
 
     LazyColumn(
@@ -131,7 +132,10 @@ fun PlaylistEpgSubPage(
                         Button(
                             onClick = onRefreshSync,
                             enabled = profile != null,
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ElectricCyan,
+                                contentColor = WhitelabelConfig.onPrimaryColor
+                            ),
                             modifier = Modifier.weight(1f).minimumInteractiveComponentSize().testTag("settings_sync_playlist_epg")
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -431,7 +435,7 @@ fun SubtitlesOsdSubPage(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "Sample Caption — NovaStream Cinema Subtitle",
+                            text = "Sample Caption — ${WhitelabelConfig.launcherLabel} Cinema Subtitle",
                             fontSize = (15f * preferences.subtitleSize.scaleFactor).sp,
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold
@@ -565,7 +569,7 @@ fun GeneralStartupSubPage(
                     Text("App Launch Startup Behavior", style = MaterialTheme.typography.titleMedium, color = ElectricCyan)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Choose what NovaStream opens automatically on launch when an active playlist exists.",
+                        "Choose what ${WhitelabelConfig.appName} opens automatically on launch when an active playlist exists.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )

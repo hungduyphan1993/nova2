@@ -68,12 +68,16 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.config.WhitelabelConfig
 import com.example.data.local.PlaylistProfileEntity
 import com.example.data.repository.SyncStage
 import com.example.ui.components.NovaGlassCard
 import com.example.ui.components.SyncBanner
+import com.example.ui.components.WhitelabelBrandEmblem
+import com.example.ui.components.WhitelabelSupportCard
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.ElectricCyan
+import com.example.ui.theme.EmeraldSignal
 import com.example.ui.theme.GlassBorder
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateContainer
@@ -103,7 +107,7 @@ fun OnboardingScreen(
     var xtreamUser by remember { mutableStateOf("") }
     var xtreamPass by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
-    var customUserAgent by remember { mutableStateOf("NovaStream/1.0 (Android)") }
+    var customUserAgent by remember { mutableStateOf(WhitelabelConfig.defaultUserAgent) }
 
     var m3uName by remember { mutableStateOf("") }
     var m3uUrl by remember { mutableStateOf("") }
@@ -174,22 +178,25 @@ fun OnboardingScreen(
                         }
                         Spacer(Modifier.width(4.dp))
                     }
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(ElectricCyan.copy(alpha = 0.16f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.LiveTv, contentDescription = null, tint = ElectricCyan)
-                    }
+                    WhitelabelBrandEmblem(
+                        size = 44.dp,
+                        cornerRadius = 12.dp,
+                        accentColor = ElectricCyan
+                    )
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text("NovaStream Player", style = MaterialTheme.typography.headlineMedium)
                         Text(
-                            "Xtream Codes • M3U/M3U8 • XMLTV EPG",
+                            text = WhitelabelConfig.appName,
+                            style = MaterialTheme.typography.headlineMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = WhitelabelConfig.tagline,
                             style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -271,7 +278,25 @@ fun OnboardingScreen(
                             OutlinedTextField(
                                 value = xtreamServer,
                                 onValueChange = { xtreamServer = it },
-                                label = { Text("Server URL (http://host:port)") },
+                                label = {
+                                    Text(
+                                        if (WhitelabelConfig.hasApiServer) {
+                                            "Server URL (Optional — auto-fetched if blank)"
+                                        } else {
+                                            "Server URL (host:port or https://host)"
+                                        }
+                                    )
+                                },
+                                supportingText = {
+                                    Text(
+                                        text = if (WhitelabelConfig.hasApiServer) {
+                                            "Auto-detects https:// & http:// • Blank fetches server via configured API"
+                                        } else {
+                                            "Auto-detects https:// & http:// if omitted from Server URL"
+                                        },
+                                        color = if (WhitelabelConfig.hasApiServer && xtreamServer.isBlank()) EmeraldSignal else TextSecondary
+                                    )
+                                },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth().testTag("xtream_server_input")
                             )
@@ -313,8 +338,14 @@ fun OnboardingScreen(
                                 onClick = {
                                     onConnectXtream(xtreamName, xtreamServer, xtreamUser, xtreamPass, customUserAgent)
                                 },
-                                enabled = !isSyncing && xtreamServer.isNotBlank() && xtreamUser.isNotBlank() && xtreamPass.isNotBlank(),
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
+                                enabled = !isSyncing &&
+                                    (xtreamServer.isNotBlank() || WhitelabelConfig.hasApiServer) &&
+                                    xtreamUser.isNotBlank() &&
+                                    xtreamPass.isNotBlank(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ElectricCyan,
+                                    contentColor = WhitelabelConfig.onPrimaryColor
+                                ),
                                 modifier = Modifier.fillMaxWidth().height(52.dp).testTag("connect_xtream_button")
                             ) {
                                 Icon(Icons.Default.CloudDownload, contentDescription = null)
@@ -376,7 +407,10 @@ fun OnboardingScreen(
                                     }
                                 },
                                 enabled = !isSyncing && (m3uUrl.isNotBlank() || pickedFileUri != null),
-                                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = ObsidianBg),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ElectricCyan,
+                                    contentColor = WhitelabelConfig.onPrimaryColor
+                                ),
                                 modifier = Modifier.fillMaxWidth().height(52.dp).testTag("connect_m3u_button")
                             ) {
                                 Icon(Icons.Default.CloudDownload, contentDescription = null)
@@ -438,6 +472,11 @@ fun OnboardingScreen(
                             }
                         }
                     }
+                }
+
+                if (WhitelabelConfig.hasSupportInfo) {
+                    Spacer(Modifier.height(14.dp))
+                    WhitelabelSupportCard()
                 }
             }
         }

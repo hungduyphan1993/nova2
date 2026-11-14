@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import android.net.Uri
+import com.example.config.WhitelabelConfig
 import com.example.data.local.AdultCategoryClassifier
 import com.example.data.local.AppDatabase
 import com.example.data.local.CategoryEntity
@@ -16,6 +17,7 @@ import com.example.data.local.SeriesEpisodeEntity
 import com.example.data.local.StreamItemEntity
 import com.example.data.local.UserPreferences
 import com.example.data.local.WatchProgressEntity
+import com.example.data.network.PortalDiscoveryService
 import com.example.data.network.XtreamApiService
 import com.example.data.parser.M3uParser
 import com.example.data.parser.XmltvParser
@@ -56,6 +58,7 @@ class NovaStreamRepository(
     private val db: AppDatabase,
     val prefs: PreferencesRepository,
     private val xtreamApi: XtreamApiService = XtreamApiService(),
+    private val portalDiscovery: PortalDiscoveryService = PortalDiscoveryService(),
     private val httpClient: OkHttpClient = XtreamApiService.defaultClient()
 ) {
     private val profileDao = db.profileDao()
@@ -175,7 +178,7 @@ class NovaStreamRepository(
 
     suspend fun updateProfileUserAgent(profileId: Long, userAgent: String) = withContext(Dispatchers.IO) {
         val current = profileDao.getById(profileId) ?: return@withContext
-        val sanitized = userAgent.trim().ifBlank { "NovaStream/1.0 (Android)" }
+        val sanitized = userAgent.trim().ifBlank { WhitelabelConfig.defaultUserAgent }
         profileDao.update(current.copy(userAgent = sanitized))
     }
 
@@ -216,19 +219,47 @@ class NovaStreamRepository(
         onProgress: (SyncStage) -> Unit
     ): Result<Long> = withContext(Dispatchers.IO) {
         runCatching {
-            onProgress(SyncStage.InProgress("Authenticating Xtream Server", serverUrl))
-            val normalizedServer = XtreamApiService.normalizeServerUrl(serverUrl)
-            val account = xtreamApi.authenticate(normalizedServer, username.trim(), password.trim(), userAgent)
+            val effectiveUa = userAgent.trim().ifBlank { WhitelabelConfig.defaultUserAgent }
+            val trimmedServer = serverUrl.trim()
+            val rawServerCandidates = if (trimmedServer.isNotBlank()) {
+                listOf(trimmedServer)
+            } else if (WhitelabelConfig.hasApiServer) {
+                onProgress(
+                    SyncStage.InProgress(
+                        "Resolving Portal Server",
+                        "Fetching server URL from configured API server"
+                    )
+                )
+                portalDiscovery.discoverServerUrls(
+                    apiServerRaw = WhitelabelConfig.apiServerUrl,
+                    username = username.trim(),
+                    userAgent = effectiveUa
+                )
+            } else {
+                throw IOException("Please enter an Xtream Server URL")
+            }
+
+            val resolvedAuth = xtreamApi.authenticateResolvingServer(
+                rawServerInputs = rawServerCandidates,
+                username = username.trim(),
+                password = password.trim(),
+                userAgent = effectiveUa
+            ) { candidateUrl ->
+                onProgress(SyncStage.InProgress("Authenticating Xtream Server", candidateUrl))
+            }
+
+            val normalizedServer = resolvedAuth.resolvedServerUrl
+            val account = resolvedAuth.accountInfo
 
             val profileId = profileDao.insert(
                 PlaylistProfileEntity(
-                    name = name.ifBlank { "Xtream IPTV" },
+                    name = name.ifBlank { "${WhitelabelConfig.launcherLabel} IPTV" },
                     sourceType = PlaylistSourceType.XTREAM,
                     serverUrl = normalizedServer,
                     username = username.trim(),
                     password = password.trim(),
                     epgUrl = xtreamApi.buildXmltvUrl(normalizedServer, username.trim(), password.trim()),
-                    userAgent = userAgent.ifBlank { "NovaStream/1.0 (Android)" },
+                    userAgent = effectiveUa,
                     accountStatus = account.status,
                     expirationEpochSec = account.expDateEpochSec,
                     maxConnections = account.maxConnections,
@@ -316,14 +347,27 @@ class NovaStreamRepository(
         onProgress: (SyncStage) -> Unit
     ): Result<Long> = withContext(Dispatchers.IO) {
         runCatching {
-            onProgress(SyncStage.InProgress("Downloading M3U Playlist", m3uUrl))
+            val effectiveUa = userAgent.trim().ifBlank { WhitelabelConfig.defaultUserAgent }
+            val resolvedM3uUrl = XtreamApiService.buildServerUrlCandidates(
+                m3uUrl.trim(),
+                preservePathAndQuery = true
+            ).firstOrNull() ?: m3uUrl.trim()
+            val resolvedEpgUrl = if (epgUrl.isNotBlank()) {
+                XtreamApiService.buildServerUrlCandidates(
+                    epgUrl.trim(),
+                    preservePathAndQuery = true
+                ).firstOrNull() ?: epgUrl.trim()
+            } else {
+                ""
+            }
+            onProgress(SyncStage.InProgress("Downloading M3U Playlist", resolvedM3uUrl))
             val profileId = profileDao.insert(
                 PlaylistProfileEntity(
                     name = name.ifBlank { "M3U Playlist" },
                     sourceType = PlaylistSourceType.M3U_URL,
-                    m3uUri = m3uUrl.trim(),
-                    epgUrl = epgUrl.trim(),
-                    userAgent = userAgent.ifBlank { "NovaStream/1.0 (Android)" },
+                    m3uUri = resolvedM3uUrl,
+                    epgUrl = resolvedEpgUrl,
+                    userAgent = effectiveUa,
                     lastSyncedAt = System.currentTimeMillis()
                 )
             )
@@ -356,7 +400,7 @@ class NovaStreamRepository(
                     sourceType = PlaylistSourceType.M3U_FILE,
                     m3uUri = fileUri.toString(),
                     epgUrl = epgUrl.trim(),
-                    userAgent = userAgent.ifBlank { "NovaStream/1.0 (Android)" },
+                    userAgent = userAgent.trim().ifBlank { WhitelabelConfig.defaultUserAgent },
                     lastSyncedAt = System.currentTimeMillis()
                 )
             )
@@ -383,23 +427,47 @@ class NovaStreamRepository(
         episodeDao.deleteByProfile(profileId)
 
         var totalStreams = 0
+        var resolvedM3uUri = profile.m3uUri
         val inputStream = when (profile.sourceType) {
             PlaylistSourceType.M3U_FILE -> {
                 context.contentResolver.openInputStream(Uri.parse(profile.m3uUri))
                     ?: throw IOException("Cannot open selected M3U file")
             }
             else -> {
-                val req = Request.Builder()
-                    .url(profile.m3uUri)
-                    .header("User-Agent", profile.userAgent)
-                    .get()
-                    .build()
-                val resp = httpClient.newCall(req).execute()
-                if (!resp.isSuccessful) {
-                    resp.close()
-                    throw IOException("HTTP ${resp.code} downloading playlist")
+                val urlCandidates = listOf(profile.m3uUri).let { baseList ->
+                    if (profile.m3uUri.startsWith("https://", ignoreCase = true)) {
+                        listOf(profile.m3uUri, "http://" + profile.m3uUri.substring(8))
+                    } else if (profile.m3uUri.startsWith("http://", ignoreCase = true)) {
+                        listOf(profile.m3uUri, "https://" + profile.m3uUri.substring(7))
+                    } else {
+                        XtreamApiService.buildServerUrlCandidates(profile.m3uUri, preservePathAndQuery = true)
+                    }
+                }.distinct()
+
+                var openedStream: java.io.InputStream? = null
+                var lastErr: Throwable? = null
+                for (candidateUrl in urlCandidates) {
+                    try {
+                        val req = Request.Builder()
+                            .url(candidateUrl)
+                            .header("User-Agent", profile.userAgent.ifBlank { WhitelabelConfig.defaultUserAgent })
+                            .get()
+                            .build()
+                        val resp = httpClient.newCall(req).execute()
+                        if (!resp.isSuccessful) {
+                            val code = resp.code
+                            resp.close()
+                            throw IOException("HTTP $code downloading playlist")
+                        }
+                        val stream = resp.body?.byteStream() ?: throw IOException("Empty M3U response")
+                        resolvedM3uUri = candidateUrl
+                        openedStream = stream
+                        break
+                    } catch (e: Throwable) {
+                        lastErr = e
+                    }
                 }
-                resp.body?.byteStream() ?: throw IOException("Empty M3U response")
+                openedStream ?: throw IOException(lastErr?.message ?: "Failed downloading M3U playlist", lastErr)
             }
         }
 
@@ -442,6 +510,7 @@ class NovaStreamRepository(
 
         val effectiveEpgUrl = profile.epgUrl.ifBlank { detectedEpg.orEmpty() }
         val updatedProfile = profile.copy(
+            m3uUri = resolvedM3uUri,
             epgUrl = effectiveEpgUrl,
             lastSyncedAt = System.currentTimeMillis()
         )
@@ -465,7 +534,7 @@ class NovaStreamRepository(
     ) = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url(epgUrl)
-            .header("User-Agent", userAgent.ifBlank { "NovaStream/1.0 (Android)" })
+            .header("User-Agent", userAgent.ifBlank { WhitelabelConfig.defaultUserAgent })
             .get()
             .build()
         httpClient.newCall(req).execute().use { resp ->

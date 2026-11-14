@@ -258,4 +258,167 @@ class NovaParsersTest {
         assertEquals(1.25f, com.example.data.local.SubtitleSizePreset.LARGE.scaleFactor, 0.001f)
         assertEquals("Off by Default", com.example.data.local.NovaLanguageOptions.displayLabel("off", isSubtitle = true))
     }
+
+    @Test
+    fun serverUrlCandidatesAutoDetectHttpsAndHttpBasedOnSchemeAndPort() {
+        // Explicit scheme is preserved without redundant fallback
+        assertEquals(
+            listOf("https://portal.example.tv:8443"),
+            com.example.data.network.XtreamApiService.buildServerUrlCandidates("https://portal.example.tv:8443/")
+        )
+        assertEquals(
+            listOf("http://line.example.tv:8080"),
+            com.example.data.network.XtreamApiService.buildServerUrlCandidates("http://line.example.tv:8080/")
+        )
+
+        // Scheme-less standard domain probes HTTPS first, then HTTP
+        assertEquals(
+            listOf("https://line.example.tv", "http://line.example.tv"),
+            com.example.data.network.XtreamApiService.buildServerUrlCandidates("line.example.tv/")
+        )
+
+        // Scheme-less cleartext Xtream port (:8080, :25461) probes HTTP first, then HTTPS
+        assertEquals(
+            listOf("http://line.example.tv:8080", "https://line.example.tv:8080"),
+            com.example.data.network.XtreamApiService.buildServerUrlCandidates("line.example.tv:8080")
+        )
+        assertEquals(
+            listOf("http://198.51.100.12:25461", "https://198.51.100.12:25461"),
+            com.example.data.network.XtreamApiService.buildServerUrlCandidates("198.51.100.12:25461")
+        )
+
+        // Preserves query string when preservePathAndQuery = true
+        assertEquals(
+            listOf(
+                "https://api.operator.tv/portal?u=alice",
+                "http://api.operator.tv/portal?u=alice"
+            ),
+            com.example.data.network.XtreamApiService.buildServerUrlCandidates(
+                "api.operator.tv/portal?u=alice",
+                preservePathAndQuery = true
+            )
+        )
+    }
+
+    @Test
+    fun portalDiscoveryServiceParsesJsonBase64AndPlainTextPayloads() {
+        // 1. JSON with nested data and array of DNS servers
+        val jsonPayload = """
+            {
+              "status": "ok",
+              "data": {
+                "server_url": "https://primary.myiptv.tv:8443/",
+                "dns_list": [
+                  "backup1.myiptv.tv:8080",
+                  {"url": "http://backup2.myiptv.tv:25461"}
+                ]
+              }
+            }
+        """.trimIndent()
+        val fromJson = com.example.data.network.PortalDiscoveryService.parsePortalUrlsFromBody(jsonPayload)
+        assertEquals(
+            listOf(
+                "https://primary.myiptv.tv:8443",
+                "backup1.myiptv.tv:8080",
+                "http://backup2.myiptv.tv:25461"
+            ),
+            fromJson
+        )
+
+        // 2. Base64-encoded JSON payload: {"portal":"https://edge.stream.tv"}
+        // Base64 = eyJwb3J0YWwiOiJodHRwczovL2VkZ2Uuc3RyZWFtLnR2In0=
+        val b64Payload = "eyJwb3J0YWwiOiJodHRwczovL2VkZ2Uuc3RyZWFtLnR2In0="
+        assertEquals(
+            listOf("https://edge.stream.tv"),
+            com.example.data.network.PortalDiscoveryService.parsePortalUrlsFromBody(b64Payload)
+        )
+
+        // 3. Plain-text response
+        assertEquals(
+            listOf("portal.direct-iptv.net:8080"),
+            com.example.data.network.PortalDiscoveryService.parsePortalUrlsFromBody("portal.direct-iptv.net:8080\n")
+        )
+
+        // 4. Discovery endpoint {username} substitution + HTTPS/HTTP expansion
+        assertEquals(
+            listOf(
+                "https://panel.brand.tv/api/dns?user=john+doe",
+                "http://panel.brand.tv/api/dns?user=john+doe"
+            ),
+            com.example.data.network.PortalDiscoveryService.buildDiscoveryEndpointCandidates(
+                "panel.brand.tv/api/dns?user={username}",
+                "john doe"
+            )
+        )
+    }
+
+    @Test
+    fun whitelabelConfigParsesHexColorsEnginesAndSupportLinks() {
+        val fallback = androidx.compose.ui.graphics.Color(0xFF00E5FF)
+        val parsedSix = com.example.config.WhitelabelConfig.parseHexColor("#FF3B5C", fallback)
+        assertEquals(1.0f, parsedSix.alpha, 0.01f)
+        assertEquals(1.0f, parsedSix.red, 0.01f)
+
+        val invalidColor = com.example.config.WhitelabelConfig.parseHexColor("not-a-color", fallback)
+        assertEquals(fallback, invalidColor)
+
+        assertEquals(
+            com.example.data.local.PlaybackEngine.LIBMPV,
+            com.example.config.WhitelabelConfig.resolveEngineFromEnv("mpv")
+        )
+        assertEquals(
+            com.example.data.local.PlaybackEngine.LIBVLC,
+            com.example.config.WhitelabelConfig.resolveEngineFromEnv("LIBVLC")
+        )
+        assertEquals(
+            com.example.data.local.PlaybackEngine.EXTERNAL_VLC,
+            com.example.config.WhitelabelConfig.resolveEngineFromEnv("VLC_APP")
+        )
+        assertEquals(
+            com.example.data.local.PlaybackEngine.EXOPLAYER,
+            com.example.config.WhitelabelConfig.resolveEngineFromEnv("")
+        )
+
+        assertEquals(
+            "mailto:support@brand.tv",
+            com.example.config.WhitelabelConfig.normalizeExternalLink("support@brand.tv")
+        )
+        assertEquals(
+            "https://t.me/brand_support",
+            com.example.config.WhitelabelConfig.normalizeExternalLink("t.me/brand_support")
+        )
+
+        // Missing / self-named placeholder values sanitize to empty string
+        assertEquals(
+            "",
+            com.example.config.WhitelabelConfig.sanitizeEnvValue("WHITELABEL_APP_NAME", "WHITELABEL_APP_NAME", "APP_NAME")
+        )
+        assertEquals(
+            "",
+            com.example.config.WhitelabelConfig.sanitizeEnvValue("null", "WHITELABEL_LOGO_URL")
+        )
+        assertEquals(
+            "",
+            com.example.config.WhitelabelConfig.sanitizeEnvValue("MY_CUSTOM_TAGLINE", "WHITELABEL_TAGLINE")
+        )
+        assertEquals(
+            "StreamBox",
+            com.example.config.WhitelabelConfig.sanitizeEnvValue("  StreamBox  ", "WHITELABEL_APP_NAME")
+        )
+
+        // Dark-on-dark accent color is automatically lifted for readability
+        val lifted = com.example.config.WhitelabelConfig.ensureVisibleAccent(
+            androidx.compose.ui.graphics.Color(0xFF000000),
+            androidx.compose.ui.graphics.Color(0xFF000000)
+        )
+        assertTrue(lifted.red > 0.5f && lifted.green > 0.5f && lifted.blue > 0.5f)
+
+        // Generic JSON key fallback in PortalDiscoveryService
+        assertEquals(
+            listOf("https://node.customhost.tv:8443"),
+            com.example.data.network.PortalDiscoveryService.parsePortalUrlsFromBody(
+                """{"location":"https://node.customhost.tv:8443/"}"""
+            )
+        )
+    }
 }

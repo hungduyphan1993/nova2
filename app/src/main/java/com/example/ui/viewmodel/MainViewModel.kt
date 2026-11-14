@@ -451,12 +451,12 @@ class MainViewModel(
         val target = customUrl?.takeIf { it.isNotBlank() }
             ?: profile?.serverUrl?.takeIf { it.isNotBlank() }
             ?: profile?.m3uUri?.takeIf { it.startsWith("http") }
-            ?: ""
+            ?: com.example.config.WhitelabelConfig.apiServerUrl
         viewModelScope.launch {
             _isRunningDiagnostics.value = true
             _diagnosticReport.value = diagnosticsService.runDiagnostics(
                 targetUrl = target,
-                userAgent = profile?.userAgent ?: "NovaStream/1.0"
+                userAgent = profile?.userAgent ?: com.example.config.WhitelabelConfig.defaultUserAgent
             )
             _isRunningDiagnostics.value = false
         }

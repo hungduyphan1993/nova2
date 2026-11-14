@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.config.WhitelabelConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -148,7 +149,7 @@ enum class SubtitleSizePreset(val label: String, val scaleFactor: Float) {
 
 @Serializable
 enum class StartupBehavior(val label: String, val subtitle: String) {
-    DASHBOARD("Home Dashboard", "Open NovaStream Control Deck at launch"),
+    DASHBOARD("Home Dashboard", "Open ${WhitelabelConfig.appName} Control Deck at launch"),
     LIVE_TV("Live TV Guide", "Jump directly to the Live TV channel list"),
     RESUME_LAST_LIVE("Auto-Tune Last Channel", "Immediately start the last watched Live TV channel")
 }
@@ -201,7 +202,7 @@ data class UserPreferences(
     val autoPipOnBackground: Boolean = true,
     val preferExternalPlayer: Boolean = false,
     val autoReconnectLive: Boolean = true,
-    val defaultEngine: PlaybackEngine = PlaybackEngine.EXOPLAYER,
+    val defaultEngine: PlaybackEngine = WhitelabelConfig.defaultPlaybackEngine,
     val vlcHardwareMode: VlcHardwareMode = VlcHardwareMode.AUTO,
     val mpvHardwareMode: MpvHardwareMode = MpvHardwareMode.AUTO_SAFE,
     val autoFallbackEngine: Boolean = true,
@@ -242,12 +243,13 @@ class PreferencesRepository(private val context: Context) {
     val preferencesFlow: Flow<UserPreferences> = context.dataStore.data.map { prefs ->
         val legacyExternal = prefs[Keys.PREFER_EXTERNAL] ?: false
         val rawEngine = prefs[Keys.DEFAULT_ENGINE]
+        val envDefaultEngine = WhitelabelConfig.defaultPlaybackEngine
         val resolvedDefaultEngine = if (rawEngine != null) {
-            PlaybackEngine.fromStoredName(rawEngine).takeIf { it != PlaybackEngine.DEFAULT } ?: PlaybackEngine.EXOPLAYER
+            PlaybackEngine.fromStoredName(rawEngine).takeIf { it != PlaybackEngine.DEFAULT } ?: envDefaultEngine
         } else if (legacyExternal) {
             PlaybackEngine.EXTERNAL_CHOOSER
         } else {
-            PlaybackEngine.EXOPLAYER
+            envDefaultEngine
         }
         UserPreferences(
             activeProfileId = prefs[Keys.ACTIVE_PROFILE_ID] ?: -1L,

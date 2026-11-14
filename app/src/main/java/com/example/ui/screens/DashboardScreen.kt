@@ -74,6 +74,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.config.WhitelabelConfig
 import com.example.data.local.EpgProgramEntity
 import com.example.data.local.MediaCategoryType
 import com.example.data.local.PlaylistProfileEntity
@@ -86,6 +87,7 @@ import com.example.ui.components.CinemaInfoBar
 import com.example.ui.components.NovaFormatters
 import com.example.ui.components.NovaGlassCard
 import com.example.ui.components.SyncBanner
+import com.example.ui.components.WhitelabelBrandEmblem
 import com.example.ui.theme.BroadcastCrimson
 import com.example.ui.theme.CinemaGold
 import com.example.ui.theme.ElectricCyan
@@ -202,9 +204,23 @@ fun DashboardScreen(
                 modifier = horizontalSafeModifier,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (WhitelabelConfig.hasCustomLogo) {
+                    WhitelabelBrandEmblem(
+                        size = 38.dp,
+                        cornerRadius = 10.dp,
+                        accentColor = ElectricCyan
+                    )
+                    Spacer(Modifier.width(10.dp))
+                }
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("NOVASTREAM", style = MaterialTheme.typography.titleLarge, color = ElectricCyan)
+                        Text(
+                            text = WhitelabelConfig.shortBrandUpper,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = ElectricCyan,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         Spacer(Modifier.width(8.dp))
                         Surface(
                             color = ElectricCyan.copy(alpha = 0.14f),

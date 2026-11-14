@@ -126,10 +126,10 @@ class PlayerViewModel(
     private var sleepTimerJob: Job? = null
     private var infoBannerJob: Job? = null
     private var engineNoticeJob: Job? = null
-    private var currentProfileUserAgent = "NovaStream/1.0 (Android)"
+    private var currentProfileUserAgent = com.example.config.WhitelabelConfig.defaultUserAgent
     private var currentBufferPreset = BufferPreset.BALANCED
     private var currentAutoReconnect = true
-    private var currentDefaultEngine = PlaybackEngine.EXOPLAYER
+    private var currentDefaultEngine = com.example.config.WhitelabelConfig.defaultPlaybackEngine
     private var currentVlcHardwareMode = VlcHardwareMode.AUTO
     private var currentMpvHardwareMode = MpvHardwareMode.AUTO_SAFE
     private var currentAutoFallbackEngine = true

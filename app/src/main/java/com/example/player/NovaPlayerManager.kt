@@ -286,7 +286,7 @@ class NovaPlayerManager(private val context: Context) {
         preferredAudioLanguage: String = "",
         preferredSubtitleLanguage: String = ""
     ): ExoPlayer {
-        val userAgent = httpHeaders["User-Agent"] ?: "NovaStream/1.0 (Android)"
+        val userAgent = httpHeaders["User-Agent"] ?: com.example.config.WhitelabelConfig.defaultUserAgent
         val dataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)

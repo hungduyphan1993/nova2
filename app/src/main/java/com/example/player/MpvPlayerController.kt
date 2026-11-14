@@ -115,7 +115,7 @@ class MpvPlayerController(private val context: Context) {
 
         return runCatching {
             val headers = parseHeaders(stream.httpHeadersJson, profileUserAgent)
-            val userAgent = headers["User-Agent"] ?: "NovaStream/1.0 (Android)"
+            val userAgent = headers["User-Agent"] ?: com.example.config.WhitelabelConfig.defaultUserAgent
             val headerFields = headers
                 .filterKeys { !it.equals("User-Agent", ignoreCase = true) }
                 .entries

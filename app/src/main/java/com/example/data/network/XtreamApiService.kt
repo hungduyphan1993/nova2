@@ -1,5 +1,6 @@
 package com.example.data.network
 
+import com.example.config.WhitelabelConfig
 import com.example.data.local.CategoryEntity
 import com.example.data.local.EpgProgramEntity
 import com.example.data.local.MediaCategoryType
@@ -30,6 +31,13 @@ data class XtreamAccountInfo(
     val activeCons: String
 )
 
+data class ResolvedXtreamAuth(
+    val resolvedServerUrl: String,
+    val accountInfo: XtreamAccountInfo
+)
+
+class XtreamCredentialsException(message: String) : IOException(message)
+
 data class VodRichMetadata(
     val plot: String,
     val cast: String,
@@ -44,6 +52,9 @@ class XtreamApiService(
 ) {
     companion object {
         private val lenientJson = Json { ignoreUnknownKeys = true; isLenient = true }
+        private val cleartextPreferredPorts = setOf(
+            80, 8000, 8080, 8880, 2052, 2082, 2086, 2095, 25461, 25462, 25463
+        )
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
@@ -52,11 +63,45 @@ class XtreamApiService(
             .build()
 
         fun normalizeServerUrl(raw: String): String {
-            val trimmed = raw.trim().trimEnd('/')
-            return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-                trimmed
+            return buildServerUrlCandidates(raw).firstOrNull() ?: "http://${raw.trim().trimEnd('/')}"
+        }
+
+        fun buildServerUrlCandidates(
+            raw: String,
+            preservePathAndQuery: Boolean = false
+        ): List<String> {
+            var trimmed = raw.trim()
+            if (trimmed.isEmpty()) return emptyList()
+
+            if (!preservePathAndQuery) {
+                trimmed = trimmed.trimEnd('/')
+            }
+
+            if (trimmed.startsWith("https://", ignoreCase = true)) {
+                val rest = trimmed.substring(8)
+                val normalized = "https://${if (preservePathAndQuery) rest else rest.trimEnd('/')}"
+                return listOf(normalized)
+            }
+            if (trimmed.startsWith("http://", ignoreCase = true)) {
+                val rest = trimmed.substring(7)
+                val normalized = "http://${if (preservePathAndQuery) rest else rest.trimEnd('/')}"
+                return listOf(normalized)
+            }
+
+            val hostAndPath = trimmed
+                .removePrefix("://")
+                .removePrefix("//")
+                .let { if (preservePathAndQuery) it else it.trimEnd('/') }
+
+            if (hostAndPath.isBlank()) return emptyList()
+
+            val authority = hostAndPath.substringBefore('/').substringBefore('?')
+            val explicitPort = authority.substringAfterLast(':', missingDelimiterValue = "").toIntOrNull()
+
+            return if (explicitPort != null && explicitPort in cleartextPreferredPorts) {
+                listOf("http://$hostAndPath", "https://$hostAndPath")
             } else {
-                "http://$trimmed"
+                listOf("https://$hostAndPath", "http://$hostAndPath")
             }
         }
 
@@ -135,25 +180,95 @@ class XtreamApiService(
         }
     }
 
+    suspend fun authenticateResolvingServer(
+        rawServerInputs: List<String>,
+        username: String,
+        password: String,
+        userAgent: String,
+        onCandidateAttempt: (String) -> Unit = {}
+    ): ResolvedXtreamAuth = withContext(Dispatchers.IO) {
+        val candidates = rawServerInputs
+            .flatMap { buildServerUrlCandidates(it) }
+            .distinct()
+
+        if (candidates.isEmpty()) {
+            throw IOException("No valid Xtream server URL provided")
+        }
+
+        val useFastProbe = candidates.size > 1
+        var credentialError: XtreamCredentialsException? = null
+        var lastError: Throwable? = null
+
+        for (candidate in candidates) {
+            onCandidateAttempt(candidate)
+            try {
+                val account = authenticateInternal(
+                    baseServerUrl = candidate,
+                    username = username,
+                    password = password,
+                    userAgent = userAgent,
+                    fastProbeTimeout = useFastProbe
+                )
+                return@withContext ResolvedXtreamAuth(
+                    resolvedServerUrl = candidate,
+                    accountInfo = account
+                )
+            } catch (credErr: XtreamCredentialsException) {
+                credentialError = credErr
+                lastError = credErr
+            } catch (err: Throwable) {
+                lastError = err
+            }
+        }
+
+        throw (credentialError ?: IOException(
+            lastError?.message ?: "Unable to reach Xtream server over HTTPS or HTTP",
+            lastError
+        ))
+    }
+
     suspend fun authenticate(
         serverUrl: String,
         username: String,
         password: String,
         userAgent: String
     ): XtreamAccountInfo = withContext(Dispatchers.IO) {
-        val base = normalizeServerUrl(serverUrl)
+        authenticateResolvingServer(
+            rawServerInputs = listOf(serverUrl),
+            username = username,
+            password = password,
+            userAgent = userAgent
+        ).accountInfo
+    }
+
+    private fun authenticateInternal(
+        baseServerUrl: String,
+        username: String,
+        password: String,
+        userAgent: String,
+        fastProbeTimeout: Boolean
+    ): XtreamAccountInfo {
+        val base = baseServerUrl.trim().trimEnd('/')
         val url = "$base/player_api.php?username=$username&password=$password"
-        val body = executeGetString(url, userAgent)
+        val client = if (fastProbeTimeout) {
+            okHttpClient.newBuilder()
+                .connectTimeout(7, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .build()
+        } else {
+            okHttpClient
+        }
+        val body = executeGetStringWithClient(client, url, userAgent)
         val root = JSONObject(body)
         val userInfo = root.optJSONObject("user_info")
             ?: throw IOException("Invalid Xtream response: missing user_info")
         val auth = userInfo.optInt("auth", 0)
         val status = userInfo.optString("status", "Active")
         if (auth != 1 && !status.equals("Active", ignoreCase = true)) {
-            throw IOException("Xtream authentication failed (status: $status)")
+            throw XtreamCredentialsException("Xtream authentication failed (status: $status)")
         }
         val expRaw = userInfo.optString("exp_date", "").toLongOrNull()
-        XtreamAccountInfo(
+        return XtreamAccountInfo(
             status = status,
             expDateEpochSec = expRaw,
             maxConnections = userInfo.optString("max_connections", "1"),
@@ -399,12 +514,20 @@ class XtreamApiService(
     }
 
     private fun executeGetString(url: String, userAgent: String): String {
+        return executeGetStringWithClient(okHttpClient, url, userAgent)
+    }
+
+    private fun executeGetStringWithClient(
+        client: OkHttpClient,
+        url: String,
+        userAgent: String
+    ): String {
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", userAgent.ifBlank { "NovaStream/1.0 (Android)" })
+            .header("User-Agent", userAgent.ifBlank { WhitelabelConfig.defaultUserAgent })
             .get()
             .build()
-        okHttpClient.newCall(request).execute().use { response ->
+        client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IOException("HTTP ${response.code}: ${response.message}")
             }

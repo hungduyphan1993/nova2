@@ -31,7 +31,7 @@ data class PlaylistProfileEntity(
     val password: String = "",
     val m3uUri: String = "",
     val epgUrl: String = "",
-    val userAgent: String = "NovaStream/1.0 (Android)",
+    val userAgent: String = com.example.config.WhitelabelConfig.defaultUserAgent,
     val epgOffsetMinutes: Int = 0,
     val accountStatus: String = "Active",
     val expirationEpochSec: Long? = null,

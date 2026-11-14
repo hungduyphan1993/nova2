@@ -278,7 +278,7 @@ private fun NovaStreamRoot(
     }
 
     val navController = rememberNavController()
-    val userAgent = activeProfile?.userAgent ?: "NovaStream/1.0 (Android)"
+    val userAgent = activeProfile?.userAgent ?: com.example.config.WhitelabelConfig.defaultUserAgent
 
     LaunchedEffect(initialRouteResolved, preferences.startupBehavior, preferences.lastLiveStreamId, liveStreams) {
         if (!startupActionApplied && initialRouteResolved == DashboardRoute) {
