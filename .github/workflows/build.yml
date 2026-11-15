@@ -1,0 +1,258 @@
+name: Android Whitelabel Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      build_variant:
+        description: 'Build variant(s) to assemble'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - debug
+          - release
+      app_name:
+        description: 'Optional override for WHITELABEL_APP_NAME'
+        required: false
+        type: string
+      application_id:
+        description: 'Optional override for WHITELABEL_APPLICATION_ID (e.g. com.brand.tv)'
+        required: false
+        type: string
+      version_name:
+        description: 'Optional override for WHITELABEL_VERSION_NAME (e.g. 1.2.0)'
+        required: false
+        type: string
+      version_code:
+        description: 'Optional override for WHITELABEL_VERSION_CODE (e.g. 2)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build Split APKs & Distribution Archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      # Whitelabel branding & operator settings (reads workflow_dispatch overrides first,
+      # then Repository Variables, then Repository Secrets; empty values fall back safely)
+      WHITELABEL_APP_NAME: ${{ inputs.app_name || vars.WHITELABEL_APP_NAME || secrets.WHITELABEL_APP_NAME }}
+      WHITELABEL_LAUNCHER_LABEL: ${{ vars.WHITELABEL_LAUNCHER_LABEL || secrets.WHITELABEL_LAUNCHER_LABEL }}
+      WHITELABEL_APPLICATION_ID: ${{ inputs.application_id || vars.WHITELABEL_APPLICATION_ID || secrets.WHITELABEL_APPLICATION_ID }}
+      WHITELABEL_VERSION_NAME: ${{ inputs.version_name || vars.WHITELABEL_VERSION_NAME || secrets.WHITELABEL_VERSION_NAME }}
+      WHITELABEL_VERSION_CODE: ${{ inputs.version_code || vars.WHITELABEL_VERSION_CODE || secrets.WHITELABEL_VERSION_CODE }}
+      WHITELABEL_TAGLINE: ${{ vars.WHITELABEL_TAGLINE || secrets.WHITELABEL_TAGLINE }}
+      WHITELABEL_LOGO_URL: ${{ vars.WHITELABEL_LOGO_URL || secrets.WHITELABEL_LOGO_URL }}
+      WHITELABEL_PRIMARY_COLOR: ${{ vars.WHITELABEL_PRIMARY_COLOR || secrets.WHITELABEL_PRIMARY_COLOR }}
+      WHITELABEL_SECONDARY_COLOR: ${{ vars.WHITELABEL_SECONDARY_COLOR || secrets.WHITELABEL_SECONDARY_COLOR }}
+      WHITELABEL_ACCENT_COLOR: ${{ vars.WHITELABEL_ACCENT_COLOR || secrets.WHITELABEL_ACCENT_COLOR }}
+      WHITELABEL_BG_COLOR: ${{ vars.WHITELABEL_BG_COLOR || secrets.WHITELABEL_BG_COLOR }}
+      WHITELABEL_SUPPORT_TEXT: ${{ vars.WHITELABEL_SUPPORT_TEXT || secrets.WHITELABEL_SUPPORT_TEXT }}
+      WHITELABEL_SUPPORT_URL: ${{ vars.WHITELABEL_SUPPORT_URL || secrets.WHITELABEL_SUPPORT_URL }}
+      WHITELABEL_API_SERVER: ${{ secrets.WHITELABEL_API_SERVER || vars.WHITELABEL_API_SERVER }}
+      WHITELABEL_DEFAULT_USER_AGENT: ${{ vars.WHITELABEL_DEFAULT_USER_AGENT || secrets.WHITELABEL_DEFAULT_USER_AGENT }}
+      WHITELABEL_DEFAULT_ENGINE: ${{ vars.WHITELABEL_DEFAULT_ENGINE || secrets.WHITELABEL_DEFAULT_ENGINE }}
+      EMULATOR_DEBUG_ABI: ${{ vars.EMULATOR_DEBUG_ABI || secrets.EMULATOR_DEBUG_ABI }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Android SDK (API 36.1 & Build-Tools 36.0.0)
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK Platform 36.1
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Restore Debug Keystore
+        run: |
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+              echo "Restored debug.keystore from debug.keystore.base64"
+            else
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+              echo "Generated fresh debug.keystore"
+            fi
+          fi
+
+      - name: Resolve Build Variant & Signing Configuration
+        id: variant
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_VARIANT="${{ inputs.build_variant }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TARGET_VARIANT="both"
+          elif [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$SECRET_STORE_PASSWORD" ] && [ -n "$SECRET_KEY_PASSWORD" ]; then
+            TARGET_VARIANT="both"
+          else
+            TARGET_VARIANT="debug"
+          fi
+
+          # Infer versionName from v* git tag when not explicitly set via env/input
+          if [ -z "${WHITELABEL_VERSION_NAME:-}" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG_VER="${GITHUB_REF#refs/tags/v}"
+            echo "WHITELABEL_VERSION_NAME=$TAG_VER" >> "$GITHUB_ENV"
+          fi
+
+          if [ "$TARGET_VARIANT" = "release" ] || [ "$TARGET_VARIANT" = "both" ]; then
+            KEYSTORE_FILE="${RUNNER_TEMP}/release-upload-key.jks"
+            if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$SECRET_STORE_PASSWORD" ] && [ -n "$SECRET_KEY_PASSWORD" ]; then
+              printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_FILE"
+              echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+              echo "STORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
+              echo "KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
+              echo "ephemeral_release_key=false" >> "$GITHUB_OUTPUT"
+            else
+              EPHEMERAL_PASS="ci-ephemeral-release-pass"
+              keytool -genkeypair -v \
+                -keystore "$KEYSTORE_FILE" \
+                -storepass "$EPHEMERAL_PASS" \
+                -alias upload \
+                -keypass "$EPHEMERAL_PASS" \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Whitelabel CI Upload,O=NovaStream,C=US"
+              echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+              echo "STORE_PASSWORD=$EPHEMERAL_PASS" >> "$GITHUB_ENV"
+              echo "KEY_PASSWORD=$EPHEMERAL_PASS" >> "$GITHUB_ENV"
+              echo "ephemeral_release_key=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          echo "target=$TARGET_VARIANT" >> "$GITHUB_OUTPUT"
+
+      - name: Run Unit Tests
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Assemble Split APKs & Versioned Distribution Archive
+        run: |
+          rm -rf artifacts
+          case "${{ steps.variant.outputs.target }}" in
+            debug)
+              gradle :app:assembleDebug --no-daemon
+              ;;
+            release)
+              gradle :app:assembleRelease --no-daemon
+              ;;
+            both)
+              gradle :app:assembleDebug :app:assembleRelease --no-daemon
+              ;;
+          esac
+          ls -lh artifacts/
+
+      - name: Publish Build Summary
+        if: always()
+        run: |
+          if [ "${{ steps.variant.outputs.ephemeral_release_key }}" = "true" ]; then
+            {
+              echo "> [!NOTE]"
+              echo "> Release APKs were signed with an ephemeral CI key (\`alias=upload\`). For persistent production/Play Store upgrades, set \`RELEASE_KEYSTORE_BASE64\`, \`STORE_PASSWORD\`, and \`KEY_PASSWORD\` in Repository Secrets."
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f artifacts/ARCHIVE_MANIFEST.md ]; then
+            cat artifacts/ARCHIVE_MANIFEST.md >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          for mf in artifacts/*/BUILD_MANIFEST.md; do
+            if [ -f "$mf" ]; then
+              cat "$mf" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload Debug Split APKs
+        if: steps.variant.outputs.target == 'debug' || steps.variant.outputs.target == 'both'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-splits-debug
+          path: |
+            artifacts/debug/*.apk
+            artifacts/debug/BUILD_MANIFEST.md
+            artifacts/debug/SHA256SUMS.txt
+            artifacts/debug/output-metadata.json
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload Release Split APKs
+        if: steps.variant.outputs.target == 'release' || steps.variant.outputs.target == 'both'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-splits-release
+          path: |
+            artifacts/release/*.apk
+            artifacts/release/BUILD_MANIFEST.md
+            artifacts/release/SHA256SUMS.txt
+            artifacts/release/output-metadata.json
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload Versioned Distribution Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: versioned-artifacts-bundle
+          path: |
+            artifacts/*-artifacts.zip
+            artifacts/*-artifacts.zip.sha256
+            artifacts/ARCHIVE_MANIFEST.md
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish GitHub Release Assets (on v* tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body_path: artifacts/ARCHIVE_MANIFEST.md
+          files: |
+            artifacts/*-artifacts.zip
+            artifacts/*-artifacts.zip.sha256
+            artifacts/ARCHIVE_MANIFEST.md
+            artifacts/release/*.apk
+            artifacts/release/SHA256SUMS.txt
