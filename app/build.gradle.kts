@@ -1,6 +1,11 @@
 import com.android.build.api.artifact.SingleArtifact
 import com.android.build.api.variant.FilterConfiguration.FilterType
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.security.MessageDigest
+import java.util.Locale
+import java.util.zip.CRC32
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 plugins {
   alias(libs.plugins.android.application)
@@ -99,6 +104,18 @@ val resolvedLauncherLabel = resolveWhitelabelEnv(
   "LAUNCHER_LABEL",
   default = ""
 )
+val resolvedVersionName = resolveWhitelabelEnv(
+  "WHITELABEL_VERSION_NAME",
+  "APP_VERSION_NAME",
+  "VERSION_NAME",
+  default = "1.0"
+)
+val resolvedVersionCode = resolveWhitelabelEnv(
+  "WHITELABEL_VERSION_CODE",
+  "APP_VERSION_CODE",
+  "VERSION_CODE",
+  default = "1"
+).toIntOrNull()?.takeIf { it > 0 } ?: 1
 
 android {
   namespace = "com.example"
@@ -108,8 +125,8 @@ android {
     applicationId = resolvedApplicationId
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = resolvedVersionCode
+    versionName = resolvedVersionName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     manifestPlaceholders["appLabel"] = resolvedLauncherLabel.ifBlank { "@string/app_name" }
@@ -296,14 +313,334 @@ androidComponents {
 
 val debugApkOutputDir = layout.buildDirectory.dir("outputs/apk/debug")
 val releaseApkOutputDir = layout.buildDirectory.dir("outputs/apk/release")
+val workspaceArtifactsRootDir = rootProject.layout.projectDirectory.dir("artifacts")
 
 val allowedEmulatorAbis = setOf("x86_64", "arm64-v8a", "x86", "armeabi-v7a", "universal")
 val rawEmulatorDebugAbi = resolveWhitelabelEnv("EMULATOR_DEBUG_ABI", "WHITELABEL_EMULATOR_DEBUG_ABI", default = "x86_64")
 val resolvedEmulatorDebugAbi = if (rawEmulatorDebugAbi in allowedEmulatorAbis) rawEmulatorDebugAbi else "x86_64"
+val resolvedBrandNameForArtifacts = resolveWhitelabelEnv("WHITELABEL_APP_NAME", "APP_NAME", default = "NovaStream Player")
+
+abstract class SyncApkArtifactsTask : DefaultTask() {
+  @get:Internal
+  abstract val sourceApkDir: DirectoryProperty
+
+  @get:Input
+  abstract val variantName: Property<String>
+
+  @get:Input
+  abstract val applicationId: Property<String>
+
+  @get:Input
+  abstract val appDisplayName: Property<String>
+
+  @get:Input
+  abstract val emulatorAbi: Property<String>
+
+  @get:OutputDirectory
+  abstract val destinationDir: DirectoryProperty
+
+  init {
+    outputs.upToDateWhen { false }
+  }
+
+  private fun sha256Hex(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+      while (true) {
+        val read = input.read(buffer)
+        if (read <= 0) break
+        digest.update(buffer, 0, read)
+      }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+  }
+
+  @TaskAction
+  fun exportArtifacts() {
+    val srcDir = sourceApkDir.get().asFile
+    if (!srcDir.exists()) return
+
+    val destDir = destinationDir.get().asFile
+    destDir.mkdirs()
+
+    val variant = variantName.get()
+    val aliasFileName = "app-$variant.apk"
+    val apkFiles = srcDir.listFiles()
+      ?.filter { it.isFile && it.extension == "apk" && it.name != aliasFileName }
+      ?.sortedBy { it.name }
+      .orEmpty()
+
+    if (apkFiles.isEmpty()) return
+
+    val expectedNames = apkFiles.map { it.name }.toSet() +
+      setOf("output-metadata.json", "SHA256SUMS.txt", "BUILD_MANIFEST.md")
+    destDir.listFiles()?.forEach { existing ->
+      if (existing.isFile && existing.name !in expectedNames) {
+        existing.delete()
+      }
+    }
+
+    val checksumLines = mutableListOf<String>()
+    val tableRows = mutableListOf<String>()
+
+    for (apk in apkFiles) {
+      val targetFile = File(destDir, apk.name)
+      apk.copyTo(targetFile, overwrite = true)
+      val sha256 = sha256Hex(targetFile)
+      val sizeMib = String.format(Locale.US, "%.2f MiB", targetFile.length().toDouble() / (1024.0 * 1024.0))
+      val abiLabel = apk.name
+        .removePrefix("app-")
+        .removeSuffix("-$variant.apk")
+      checksumLines += "$sha256  ${targetFile.name}"
+      tableRows += "| `${targetFile.name}` | `$abiLabel` | $sizeMib | `${sha256.take(16)}…` |"
+    }
+
+    val metadataFile = File(srcDir, "output-metadata.json")
+    if (metadataFile.exists()) {
+      metadataFile.copyTo(File(destDir, "output-metadata.json"), overwrite = true)
+    }
+
+    File(destDir, "SHA256SUMS.txt").writeText(checksumLines.joinToString("\n") + "\n")
+
+    val manifestMd = buildString {
+      appendLine("# ${appDisplayName.get()} — ${variant.replaceFirstChar { it.uppercase() }} APK Artifacts")
+      appendLine()
+      appendLine("- **Application ID:** `${applicationId.get()}`")
+      appendLine("- **Build Variant:** `$variant`")
+      if (variant == "debug") {
+        appendLine("- **Emulator Synced ABI (`.build-outputs/app-debug.apk`):** `${emulatorAbi.get()}`")
+      }
+      appendLine()
+      appendLine("| APK File | Target ABI | Size | SHA-256 (prefix) |")
+      appendLine("| :--- | :--- | ---: | :--- |")
+      tableRows.forEach { appendLine(it) }
+    }
+    File(destDir, "BUILD_MANIFEST.md").writeText(manifestMd)
+  }
+}
+
+val syncDebugBuildsToArtifacts = tasks.register<SyncApkArtifactsTask>("syncDebugBuildsToArtifacts") {
+  sourceApkDir.set(debugApkOutputDir)
+  variantName.set("debug")
+  applicationId.set(resolvedApplicationId)
+  appDisplayName.set(resolvedBrandNameForArtifacts)
+  emulatorAbi.set(resolvedEmulatorDebugAbi)
+  destinationDir.set(workspaceArtifactsRootDir.dir("debug"))
+}
+
+val syncReleaseBuildsToArtifacts = tasks.register<SyncApkArtifactsTask>("syncReleaseBuildsToArtifacts") {
+  sourceApkDir.set(releaseApkOutputDir)
+  variantName.set("release")
+  applicationId.set(resolvedApplicationId)
+  appDisplayName.set(resolvedBrandNameForArtifacts)
+  emulatorAbi.set("universal")
+  destinationDir.set(workspaceArtifactsRootDir.dir("release"))
+}
+
+val archiveBrandSlug = resolvedBrandNameForArtifacts
+  .lowercase(Locale.US)
+  .replace(Regex("[^a-z0-9]+"), "-")
+  .trim('-')
+  .ifBlank { "novastream" }
+val archiveSafeVersionName = resolvedVersionName
+  .replace(Regex("[^a-zA-Z0-9._+-]+"), "-")
+  .trim('-')
+  .ifBlank { "1.0" }
+val versionedArtifactsZipName = "$archiveBrandSlug-v$archiveSafeVersionName-vc$resolvedVersionCode-artifacts.zip"
+
+abstract class PackageArtifactsArchiveTask : DefaultTask() {
+  @get:Internal
+  abstract val artifactsRootDir: DirectoryProperty
+
+  @get:Input
+  abstract val archiveFileName: Property<String>
+
+  @get:Input
+  abstract val appDisplayName: Property<String>
+
+  @get:Input
+  abstract val applicationId: Property<String>
+
+  @get:Input
+  abstract val versionName: Property<String>
+
+  @get:Input
+  abstract val versionCode: Property<Int>
+
+  @get:OutputFile
+  abstract val archiveOutputFile: RegularFileProperty
+
+  @get:OutputFile
+  abstract val checksumOutputFile: RegularFileProperty
+
+  @get:OutputFile
+  abstract val manifestOutputFile: RegularFileProperty
+
+  init {
+    outputs.upToDateWhen { false }
+  }
+
+  private fun computeCrc32(file: File): Long {
+    val crc = CRC32()
+    file.inputStream().buffered().use { input ->
+      val buffer = ByteArray(64 * 1024)
+      while (true) {
+        val read = input.read(buffer)
+        if (read <= 0) break
+        crc.update(buffer, 0, read)
+      }
+    }
+    return crc.value
+  }
+
+  private fun computeSha256(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+      val buffer = ByteArray(64 * 1024)
+      while (true) {
+        val read = input.read(buffer)
+        if (read <= 0) break
+        digest.update(buffer, 0, read)
+      }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+  }
+
+  @TaskAction
+  fun createVersionedArchive() {
+    val rootDir = artifactsRootDir.get().asFile
+    if (!rootDir.exists()) return
+
+    val outZip = archiveOutputFile.get().asFile
+    val outSha = checksumOutputFile.get().asFile
+    val outManifest = manifestOutputFile.get().asFile
+    outZip.parentFile?.mkdirs()
+
+    val targetZipName = archiveFileName.get()
+    val excludedRootNames = setOf(
+      targetZipName,
+      outSha.name,
+      outManifest.name
+    )
+
+    // Remove stale versioned archives from earlier version bumps so artifacts/ stays tidy
+    rootDir.listFiles()?.forEach { f ->
+      if (f.isFile &&
+        f.name !in excludedRootNames &&
+        (f.name.endsWith("-artifacts.zip") || f.name.endsWith("-artifacts.zip.sha256") || f.name.startsWith(".tmp-"))
+      ) {
+        f.delete()
+      }
+    }
+
+    val filesToArchive = rootDir.walkTopDown()
+      .filter { file ->
+        if (!file.isFile) return@filter false
+        val rel = file.relativeTo(rootDir).invariantSeparatorsPath
+        if (rel in excludedRootNames) return@filter false
+        if (file.name.endsWith(".zip") || file.name.endsWith(".zip.sha256") || file.name.startsWith(".tmp-")) {
+          return@filter false
+        }
+        true
+      }
+      .sortedBy { it.relativeTo(rootDir).invariantSeparatorsPath }
+      .toList()
+
+    if (filesToArchive.isEmpty()) return
+
+    val tempZip = File(rootDir, ".tmp-$targetZipName")
+    val entryRows = mutableListOf<String>()
+
+    ZipOutputStream(tempZip.outputStream().buffered(64 * 1024)).use { zos ->
+      val copyBuffer = ByteArray(64 * 1024)
+      for (file in filesToArchive) {
+        val relPath = file.relativeTo(rootDir).invariantSeparatorsPath
+        val entry = ZipEntry(relPath).apply {
+          time = file.lastModified()
+          if (file.extension.equals("apk", ignoreCase = true)) {
+            method = ZipEntry.STORED
+            size = file.length()
+            compressedSize = file.length()
+            crc = computeCrc32(file)
+          } else {
+            method = ZipEntry.DEFLATED
+          }
+        }
+        zos.putNextEntry(entry)
+        file.inputStream().buffered(64 * 1024).use { input ->
+          while (true) {
+            val read = input.read(copyBuffer)
+            if (read <= 0) break
+            zos.write(copyBuffer, 0, read)
+          }
+        }
+        zos.closeEntry()
+
+        val sizeStr = if (file.length() >= 1024 * 1024) {
+          String.format(Locale.US, "%.2f MiB", file.length().toDouble() / (1024.0 * 1024.0))
+        } else {
+          String.format(Locale.US, "%.2f KiB", file.length().toDouble() / 1024.0)
+        }
+        val modeLabel = if (file.extension.equals("apk", ignoreCase = true)) "STORED" else "DEFLATED"
+        entryRows += "| `$relPath` | $sizeStr | `$modeLabel` |"
+      }
+    }
+
+    if (outZip.exists()) outZip.delete()
+    tempZip.renameTo(outZip)
+
+    val zipSha256 = computeSha256(outZip)
+    val zipSizeMib = String.format(Locale.US, "%.2f MiB", outZip.length().toDouble() / (1024.0 * 1024.0))
+    outSha.writeText("$zipSha256  ${outZip.name}\n")
+
+    val archiveSummary = buildString {
+      appendLine("# ${appDisplayName.get()} — Versioned Distribution Archive")
+      appendLine()
+      appendLine("- **Archive File:** `${outZip.name}`")
+      appendLine("- **Version:** `${versionName.get()}` (`versionCode = ${versionCode.get()}`)")
+      appendLine("- **Application ID:** `${applicationId.get()}`")
+      appendLine("- **Archive Size:** $zipSizeMib (${outZip.length()} bytes)")
+      appendLine("- **SHA-256:** `$zipSha256`")
+      appendLine()
+      appendLine("## Packaged Entries (${filesToArchive.size})")
+      appendLine()
+      appendLine("| Relative Path | Size | ZIP Method |")
+      appendLine("| :--- | ---: | :--- |")
+      entryRows.forEach { appendLine(it) }
+    }
+    outManifest.writeText(archiveSummary)
+  }
+}
+
+val zipArtifacts = tasks.register<PackageArtifactsArchiveTask>("zipArtifacts") {
+  description = "Packages the contents of the workspace artifacts folder into a versioned distribution ZIP archive."
+  group = "distribution"
+  artifactsRootDir.set(workspaceArtifactsRootDir)
+  archiveFileName.set(versionedArtifactsZipName)
+  appDisplayName.set(resolvedBrandNameForArtifacts)
+  applicationId.set(resolvedApplicationId)
+  versionName.set(resolvedVersionName)
+  versionCode.set(resolvedVersionCode)
+  archiveOutputFile.set(workspaceArtifactsRootDir.file(versionedArtifactsZipName))
+  checksumOutputFile.set(workspaceArtifactsRootDir.file("$versionedArtifactsZipName.sha256"))
+  manifestOutputFile.set(workspaceArtifactsRootDir.file("ARCHIVE_MANIFEST.md"))
+  mustRunAfter(syncDebugBuildsToArtifacts, syncReleaseBuildsToArtifacts)
+}
+
+syncDebugBuildsToArtifacts.configure {
+  finalizedBy(zipArtifacts)
+}
+
+syncReleaseBuildsToArtifacts.configure {
+  finalizedBy(zipArtifacts)
+}
 
 tasks.matching { it.name == "packageDebug" }.configureEach {
   val outDirProvider = debugApkOutputDir
   val targetAbi = resolvedEmulatorDebugAbi
+  inputs.property("emulatorDebugAbi", targetAbi)
+  finalizedBy(syncDebugBuildsToArtifacts)
   doLast {
     val dir = outDirProvider.get().asFile
     val preferredApk = File(dir, "app-$targetAbi-debug.apk")
@@ -315,8 +652,13 @@ tasks.matching { it.name == "packageDebug" }.configureEach {
   }
 }
 
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+  finalizedBy(syncDebugBuildsToArtifacts, zipArtifacts)
+}
+
 tasks.matching { it.name == "packageRelease" }.configureEach {
   val outDirProvider = releaseApkOutputDir
+  finalizedBy(syncReleaseBuildsToArtifacts)
   doLast {
     val dir = outDirProvider.get().asFile
     val universalApk = File(dir, "app-universal-release.apk")
@@ -324,6 +666,10 @@ tasks.matching { it.name == "packageRelease" }.configureEach {
       universalApk.copyTo(File(dir, "app-release.apk"), overwrite = true)
     }
   }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+  finalizedBy(syncReleaseBuildsToArtifacts, zipArtifacts)
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -336,6 +682,10 @@ secrets {
   ignoreList.add("APP_NAME")
   ignoreList.add("LAUNCHER_LABEL")
   ignoreList.add("APPLICATION_ID")
+  ignoreList.add("APP_VERSION_NAME")
+  ignoreList.add("APP_VERSION_CODE")
+  ignoreList.add("VERSION_NAME")
+  ignoreList.add("VERSION_CODE")
   ignoreList.add("APP_TAGLINE")
   ignoreList.add("BRAND_LOGO_URL")
   ignoreList.add("PRIMARY_COLOR")
